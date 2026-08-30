@@ -75,13 +75,9 @@ internal sealed class TransparentTrackBar : TrackBar
   public TransparentTrackBar()
   {
     SetStyle(ControlStyles.SupportsTransparentBackColor, true);
-    SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-    BackColor = Color.Transparent;
-  }
-
-  protected override void OnPaintBackground(PaintEventArgs e)
-  {
-    // WinForms standard controls do not honor alpha in BackColor; let the parent panel paint the background.
+    DoubleBuffered = true;
+    BackColor = Color.FromArgb(32, 24, 25, 29);
+    ForeColor = Color.White;
   }
 }
 
@@ -325,11 +321,11 @@ public sealed class MainForm : Form
         panel.Controls.Add(title);
 
         AddSliderControl(panel, "核心缩放", _scaleInput, 0, 150, (int)Math.Clamp(_settings.CoreScale * 100, 0, 150), 42);
-        AddSliderControl(panel, "核心 X", _offsetXInput, -1500, 1000, (int)Math.Clamp(_settings.CoreOffsetX, -1500, 1000), 76);
-        AddSliderControl(panel, "核心 Y", _offsetYInput, -1500, 1000, (int)Math.Clamp(_settings.CoreOffsetY, -1500, 1000), 110);
+        AddSliderControl(panel, "核心 X", _offsetXInput, -2500, 2000, (int)Math.Clamp(_settings.CoreOffsetX, -2500, 2000), 76);
+        AddSliderControl(panel, "核心 Y", _offsetYInput, -2500, 2000, (int)Math.Clamp(_settings.CoreOffsetY, -2500, 2000), 110);
         AddSliderControl(panel, "LCZ 缩放", _lczScaleInput, 0, 150, (int)Math.Clamp(_settings.LczScale * 100, 0, 150), 144);
-        AddSliderControl(panel, "LCZ X", _lczOffsetXInput, -1500, 1000, (int)Math.Clamp(_settings.LczOffsetX, -1500, 1000), 178);
-        AddSliderControl(panel, "LCZ Y", _lczOffsetYInput, -1500, 1000, (int)Math.Clamp(_settings.LczOffsetY, -1500, 1000), 212);
+        AddSliderControl(panel, "LCZ X", _lczOffsetXInput, -2500, 2000, (int)Math.Clamp(_settings.LczOffsetX, -2500, 2000), 178);
+        AddSliderControl(panel, "LCZ Y", _lczOffsetYInput, -2500, 2000, (int)Math.Clamp(_settings.LczOffsetY, -2500, 2000), 212);
 
         var saveButton = new Button
         {
@@ -347,7 +343,7 @@ public sealed class MainForm : Form
 
         var hint = new Label
         {
-          Text = "0–150 / -1500–1000",
+          Text = "0–150 / -2500–2000",
           Location = new Point(126, 285),
           AutoSize = true,
           BackColor = Color.Transparent,
@@ -520,11 +516,11 @@ public sealed class MainForm : Form
       private void UpdateControlInputs()
       {
         _scaleInput.Value = (int)Math.Clamp(_settings.CoreScale * 100, 0, 150);
-        _offsetXInput.Value = (int)Math.Clamp(_settings.CoreOffsetX, -1500, 1000);
-        _offsetYInput.Value = (int)Math.Clamp(_settings.CoreOffsetY, -1500, 1000);
+        _offsetXInput.Value = (int)Math.Clamp(_settings.CoreOffsetX, -2500, 2000);
+        _offsetYInput.Value = (int)Math.Clamp(_settings.CoreOffsetY, -2500, 2000);
         _lczScaleInput.Value = (int)Math.Clamp(_settings.LczScale * 100, 0, 150);
-        _lczOffsetXInput.Value = (int)Math.Clamp(_settings.LczOffsetX, -1500, 1000);
-        _lczOffsetYInput.Value = (int)Math.Clamp(_settings.LczOffsetY, -1500, 1000);
+        _lczOffsetXInput.Value = (int)Math.Clamp(_settings.LczOffsetX, -2500, 2000);
+        _lczOffsetYInput.Value = (int)Math.Clamp(_settings.LczOffsetY, -2500, 2000);
       }
 
       private static void Log(string message)
@@ -691,6 +687,17 @@ public sealed class MainForm : Form
           var connections = alignedPositions[room].Connections;
           foreach (var connection in connections)
           {
+            if (connection.Dx == 0 && connection.Dz == 0)
+            {
+              continue;
+            }
+
+            var drawOnce = connection.Dx > 0 || (connection.Dx == 0 && connection.Dz > 0);
+            if (!drawOnce)
+            {
+              continue;
+            }
+
             var length = cell / 2f + 1f;
             var horizontal = connection.Dx != 0;
             var width = horizontal ? length : arm;
@@ -886,9 +893,11 @@ public sealed class MainForm : Form
 
         var trimmed = name.Trim();
         return trimmed.Contains("T形路口", StringComparison.OrdinalIgnoreCase)
+          || trimmed.Contains("转角走廊", StringComparison.OrdinalIgnoreCase)
           || trimmed.Contains("直线走廊", StringComparison.OrdinalIgnoreCase)
           || trimmed.Contains("十字路口", StringComparison.OrdinalIgnoreCase)
           || trimmed.Contains("T 形路口", StringComparison.OrdinalIgnoreCase)
+          || trimmed.Contains("转 角 走 廊", StringComparison.OrdinalIgnoreCase)
           || trimmed.Contains("直 线 走 廊", StringComparison.OrdinalIgnoreCase);
       }
 

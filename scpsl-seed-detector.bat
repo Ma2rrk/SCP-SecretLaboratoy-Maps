@@ -345,14 +345,25 @@ function Set-Notify($on) {
 
 function Sync-Cmdbinding($keyCode) {
     $cbPath = Join-Path $env:APPDATA 'SCP Secret Laboratory\cmdbinding.txt'
-    $want = "$keyCode" + ':seed'
+    $aliases = @("$keyCode:seed", '281:seed')
     $lines = @()
     if (Test-Path $cbPath) { $lines = @(Get-Content $cbPath | Where-Object { $_.Trim() -ne '' }) }
     $kept = @($lines | Where-Object {
         $p = $_.Split(':', 2)
-        -not ($p.Count -eq 2 -and ($p[1].Trim() -eq 'seed' -or $p[0].Trim() -eq "$keyCode"))
+        $keep = $true
+        if ($p.Count -eq 2) {
+            $cmd = $p[1].Trim()
+            $vk = $p[0].Trim()
+            if ($cmd -eq 'seed') {
+                $keep = $false
+            }
+            if ($vk -eq "$keyCode" -or $vk -eq '281') {
+                $keep = $false
+            }
+        }
+        return $keep
     })
-    $content = ((@($kept) + $want) -join "`r`n") + "`r`n"
+    $content = ((@($kept) + $aliases) -join "`r`n") + "`r`n"
     $cur = if (Test-Path $cbPath) { [IO.File]::ReadAllText($cbPath) } else { '' }
     if ($cur -ne $content) { [IO.File]::WriteAllText($cbPath, $content, (New-Object System.Text.UTF8Encoding($false))) }
 }
