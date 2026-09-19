@@ -1,11 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -29,6 +31,8 @@ internal sealed class OverlaySettings
   public float LczOffsetY { get; set; }
   public double Opacity { get; set; } = 1.0;
   public string Hotkey { get; set; } = "F8";
+  public string SeedHotkey { get; set; } = "PageDown";
+  public string ApiSource { get; set; } = "Primary";
 
   public static OverlaySettings Load()
   {
@@ -65,8 +69,43 @@ internal sealed class TransparentPanel : Panel
 
   protected override void OnPaintBackground(PaintEventArgs e)
   {
-    using var brush = new SolidBrush(Color.FromArgb(180, 24, 25, 29));
-    e.Graphics.FillRectangle(brush, ClientRectangle);
+    e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+    using var path = new GraphicsPath();
+    var bounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+    const int radius = 14;
+    path.AddArc(bounds.Left, bounds.Top, radius, radius, 180, 90);
+    path.AddArc(bounds.Right - radius, bounds.Top, radius, radius, 270, 90);
+    path.AddArc(bounds.Right - radius, bounds.Bottom - radius, radius, radius, 0, 90);
+    path.AddArc(bounds.Left, bounds.Bottom - radius, radius, radius, 90, 90);
+    path.CloseFigure();
+
+    using var brush = new SolidBrush(Color.FromArgb(224, 20, 22, 27));
+    e.Graphics.FillPath(brush, path);
+  }
+
+  protected override void OnPaint(PaintEventArgs e)
+  {
+    base.OnPaint(e);
+    e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+    using var border = new Pen(Color.FromArgb(150, 88, 94, 104), 1f);
+    using var accent = new SolidBrush(Color.FromArgb(232, 89, 12));
+    var bounds = new Rectangle(0, 0, Math.Max(0, Width - 1), Math.Max(0, Height - 1));
+    e.Graphics.DrawRoundedRectangle(border, bounds, 14);
+    e.Graphics.FillRectangle(accent, 16, 0, Math.Max(24, Width - 32), 2);
+  }
+}
+
+internal static class GraphicsExtensions
+{
+  public static void DrawRoundedRectangle(this Graphics graphics, Pen pen, Rectangle bounds, int radius)
+  {
+    using var path = new GraphicsPath();
+    path.AddArc(bounds.Left, bounds.Top, radius, radius, 180, 90);
+    path.AddArc(bounds.Right - radius, bounds.Top, radius, radius, 270, 90);
+    path.AddArc(bounds.Right - radius, bounds.Bottom - radius, radius, radius, 0, 90);
+    path.AddArc(bounds.Left, bounds.Bottom - radius, radius, radius, 90, 90);
+    path.CloseFigure();
+    graphics.DrawPath(pen, path);
   }
 }
 
@@ -85,7 +124,6 @@ public sealed class MainForm : Form
 {
   private static readonly object LogLock = new();
   private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "overlay.log");
-  private const byte PageDownVirtualKey = 0x22;
   private const uint KeyEventKeyUp = 0x0002;
 
   [DllImport("user32.dll")]
@@ -104,6 +142,12 @@ public sealed class MainForm : Form
   private const uint SwpNoMove = 0x0002;
   private const uint SwpNoSize = 0x0001;
   private const uint SwpNoActivate = 0x0010;
+  private const int ScaleSliderMin = 100;
+  private const int ScaleSliderMax = 1500;
+  private const int OffsetXSliderMin = -20000;
+  private const int OffsetXSliderMax = 20000;
+  private const int OffsetYSliderMin = -10000;
+  private const int OffsetYSliderMax = 10000;
 
     private readonly HttpClient _httpClient = new();
     private readonly System.Windows.Forms.Timer _timer = new();
@@ -114,6 +158,11 @@ public sealed class MainForm : Form
     private readonly TransparentTrackBar _lczScaleInput = new();
     private readonly TransparentTrackBar _lczOffsetXInput = new();
     private readonly TransparentTrackBar _lczOffsetYInput = new();
+    private readonly ComboBox _overlayHotkeyInput = new();
+    private readonly ComboBox _seedHotkeyInput = new();
+    private readonly ComboBox _apiInput = new();
+    private RectangleF _coreMapBounds;
+    private RectangleF _lczMapBounds;
     private Panel? _controlPanel;
     private bool _dragging;
     private bool _draggingLcz;
@@ -126,6 +175,8 @@ public sealed class MainForm : Form
 
     private long _currentSeed;
     private MapApiResponse? _map;
+    private bool _isBackupMap;
+    private IReadOnlyDictionary<string, string> _roomTranslations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private bool _isPolling;
     private const int HotkeyId = 1001;
     private const int WmHotkey = 0x0312;
@@ -180,7 +231,7 @@ public sealed class MainForm : Form
             if (IsGameFocused())
             {
               Log("SCP:SL 获得焦点，发送 PageDown");
-              SimulatePageDown();
+              SimulateSeedKey();
             }
             else
             {
@@ -237,10 +288,16 @@ public sealed class MainForm : Form
         }
     }
 
-    private static void SimulatePageDown()
+    private void SimulateSeedKey()
     {
-      keybd_event(PageDownVirtualKey, 0, 0, UIntPtr.Zero);
-      keybd_event(PageDownVirtualKey, 0, KeyEventKeyUp, UIntPtr.Zero);
+      if (!Enum.TryParse<Keys>(_settings.SeedHotkey, true, out var key) || key == Keys.None)
+      {
+        key = Keys.PageDown;
+      }
+
+      var virtualKey = (byte)((int)key & 0xFF);
+      keybd_event(virtualKey, 0, 0, UIntPtr.Zero);
+      keybd_event(virtualKey, 0, KeyEventKeyUp, UIntPtr.Zero);
       Log("PageDown 已发送");
     }
 
@@ -268,17 +325,28 @@ public sealed class MainForm : Form
       Log($"发现新 seed={seed}");
         try
         {
-            var json = await _httpClient.GetStringAsync($"https://scpslmaps.fxdyj.com/api.php?seed={seed}");
+            var useBackup = string.Equals(_settings.ApiSource, "Backup", StringComparison.OrdinalIgnoreCase);
+            var url = useBackup ? $"https://slmaps.com/api/maps/{seed}" : $"https://scpslmaps.fxdyj.com/api.php?seed={seed}";
+            string json = string.Empty;
+            for (var attempt = 1; attempt <= (useBackup ? 30 : 1); attempt++)
+            {
+              json = await _httpClient.GetStringAsync(url);
+              if (!useBackup || !IsPendingMapJob(json)) break;
+              Log($"备用 API 仍在生成地图，等待重试 ({attempt}/30)");
+              await Task.Delay(TimeSpan.FromSeconds(2));
+            }
+            if (useBackup && IsPendingMapJob(json))
+            {
+              Log("备用 API 等待超时");
+              return;
+            }
         Log($"API 请求成功，响应长度={json.Length}");
           Log("JSON 原文开始");
           Log(json);
           Log("JSON 原文结束");
-            var data = JsonSerializer.Deserialize<MapApiResponse>(json, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true,
-            });
+            var data = MapResponseAdapter.Parse(json, seed, useBackup);
 
-            if (data is null)
+            if (data is null || data.Zones.Count == 0)
             {
               Log("JSON 解析失败：结果为空");
                 return;
@@ -286,6 +354,10 @@ public sealed class MainForm : Form
 
             Log($"JSON 解析成功：seed={data.Seed}，区域数={data.Zones.Count}");
             _map = data;
+            _isBackupMap = useBackup;
+            _roomTranslations = useBackup
+              ? LoadRoomTranslations()
+              : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             _currentSeed = seed;
             Log($"地图解析成功，区域数={data.Zones.Count}，开始重绘");
             Invalidate();
@@ -300,25 +372,64 @@ public sealed class MainForm : Form
         }
     }
 
+    private static bool IsPendingMapJob(string json)
+    {
+      try
+      {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        var job = root.TryGetProperty("job", out var jobProperty) ? jobProperty.GetString() : null;
+        var status = root.TryGetProperty("status", out var statusProperty) ? statusProperty.GetString() : null;
+        return string.Equals(job, "running", StringComparison.OrdinalIgnoreCase)
+          && string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase);
+      }
+      catch (JsonException)
+      {
+        return false;
+      }
+    }
+
       private Panel BuildControlPanel()
       {
         var panel = new TransparentPanel
         {
           Location = new Point(16, 16),
-          Size = new Size(300, 320),
+          Size = new Size(370, 610),
           ForeColor = Color.White,
-          Padding = new Padding(12),
+          Padding = new Padding(18),
         };
 
         var title = new Label
         {
           Text = "地图控制",
-          Location = new Point(12, 10),
+          Location = new Point(18, 16),
           AutoSize = true,
           BackColor = Color.Transparent,
-          Font = new Font(FontFamily.GenericSansSerif, 10f, FontStyle.Bold),
+          ForeColor = Color.White,
+          Font = new Font(FontFamily.GenericSansSerif, 13f, FontStyle.Bold),
         };
         panel.Controls.Add(title);
+
+        var subtitle = new Label
+        {
+          Text = "Fine positioning and scale calibration",
+          Location = new Point(19, 43),
+          AutoSize = true,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(170, 190, 196, 204),
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+        };
+        panel.Controls.Add(subtitle);
+
+        _settings.CoreScale = Math.Clamp(_settings.CoreScale, 0.1f, 1.5f);
+        _settings.LczScale = Math.Clamp(_settings.LczScale, 0.1f, 1.5f);
+        _settings.CoreOffsetX = Math.Clamp(_settings.CoreOffsetX, -2000f, 2000f);
+        _settings.CoreOffsetY = Math.Clamp(_settings.CoreOffsetY, -1000f, 1000f);
+        _settings.LczOffsetX = Math.Clamp(_settings.LczOffsetX, -2000f, 2000f);
+        _settings.LczOffsetY = Math.Clamp(_settings.LczOffsetY, -1000f, 1000f);
+
+        AddSectionLabel(panel, "CORE / EZ + HCZ", 20, 68);
+        AddSectionLabel(panel, "LCZ / LIGHT CONTAINMENT", 20, 218);
 
         AddSliderControl(panel, "核心缩放", _scaleInput, 0, 150, (int)Math.Clamp(_settings.CoreScale * 100, 0, 150), 42);
         AddSliderControl(panel, "核心 X", _offsetXInput, -2500, 2000, (int)Math.Clamp(_settings.CoreOffsetX, -2500, 2000), 76);
@@ -327,15 +438,20 @@ public sealed class MainForm : Form
         AddSliderControl(panel, "LCZ X", _lczOffsetXInput, -2500, 2000, (int)Math.Clamp(_settings.LczOffsetX, -2500, 2000), 178);
         AddSliderControl(panel, "LCZ Y", _lczOffsetYInput, -2500, 2000, (int)Math.Clamp(_settings.LczOffsetY, -2500, 2000), 212);
 
+        AddKeyControl(panel, "面板快捷键", _overlayHotkeyInput, _settings.Hotkey, 398, "F8");
+        AddKeyControl(panel, "获取种子键", _seedHotkeyInput, _settings.SeedHotkey, 434, "PageDown");
+        AddApiControl(panel, _apiInput, _settings.ApiSource, 470);
+
         var saveButton = new Button
         {
           Text = "保存设置",
-          Location = new Point(12, 280),
-          Size = new Size(105, 25),
+          Location = new Point(18, 530),
+          Size = new Size(136, 32),
           FlatStyle = FlatStyle.Flat,
           BackColor = Color.FromArgb(232, 89, 12),
           ForeColor = Color.White,
           Cursor = Cursors.Hand,
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f, FontStyle.Bold),
         };
         saveButton.FlatAppearance.BorderSize = 0;
         saveButton.Click += (_, _) => SaveControlSettings();
@@ -343,13 +459,14 @@ public sealed class MainForm : Form
 
         var hint = new Label
         {
-          Text = "0–150 / -2500–2000",
-          Location = new Point(126, 285),
+          Text = "Scale 0.1–3.0x  |  Offset ±5000px",
+          Location = new Point(166, 539),
           AutoSize = true,
           BackColor = Color.Transparent,
           ForeColor = Color.FromArgb(190, 220, 220, 220),
-          Font = new Font(FontFamily.GenericSansSerif, 8f),
+          Font = new Font(FontFamily.GenericSansSerif, 7.5f),
         };
+        hint.Text = "Scale 0.1-1.5x  |  X +/-2000  |  Y +/-1000";
         panel.Controls.Add(hint);
 
         _scaleInput.ValueChanged += (_, _) => ApplyControlSettings();
@@ -361,50 +478,164 @@ public sealed class MainForm : Form
         return panel;
       }
 
-      private static void AddSliderControl(Control parent, string labelText, TrackBar input, int minimum, int maximum, int value, int y)
+      private void AddSliderControl(Control parent, string labelText, TrackBar input, int minimum, int maximum, int value, int y)
       {
+        var isScale = input == _scaleInput || input == _lczScaleInput;
+        y = input == _scaleInput ? 82
+          : input == _offsetXInput ? 124
+          : input == _offsetYInput ? 166
+          : input == _lczScaleInput ? 232
+          : input == _lczOffsetXInput ? 274
+          : 316;
+        minimum = isScale ? ScaleSliderMin
+          : input == _offsetYInput || input == _lczOffsetYInput ? OffsetYSliderMin : OffsetXSliderMin;
+        maximum = isScale ? ScaleSliderMax
+          : input == _offsetYInput || input == _lczOffsetYInput ? OffsetYSliderMax : OffsetXSliderMax;
+        value *= 10;
         var label = new Label
         {
           Text = labelText,
-          Location = new Point(12, y + 4),
+          Location = new Point(20, y + 7),
           AutoSize = true,
           BackColor = Color.Transparent,
-          ForeColor = Color.FromArgb(215, 220, 220, 220),
+          ForeColor = Color.FromArgb(220, 226, 230, 236),
           Font = new Font(FontFamily.GenericSansSerif, 8.5f),
         };
 
-        input.Location = new Point(110, y);
-        input.Size = new Size(150, 40);
+        input.Location = new Point(106, y);
+        input.Size = new Size(188, 38);
         input.Minimum = minimum;
         input.Maximum = maximum;
         input.Value = value;
         input.TickStyle = TickStyle.None;
-        input.LargeChange = 10;
+        input.LargeChange = 1;
         input.SmallChange = 1;
         input.BackColor = Color.Transparent;
         input.ForeColor = Color.White;
+        var valueLabel = new Label
+        {
+          Location = new Point(302, y + 7),
+          Size = new Size(52, 20),
+          TextAlign = ContentAlignment.MiddleRight,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(255, 180, 133),
+          Font = new Font(FontFamily.GenericMonospace, 8f, FontStyle.Bold),
+        };
+        valueLabel.Text = FormatSliderValue(input.Value, isScale);
+        input.ValueChanged += (_, _) => valueLabel.Text = FormatSliderValue(input.Value, isScale);
+        parent.Controls.Add(label);
+        parent.Controls.Add(input);
+        parent.Controls.Add(valueLabel);
+      }
+
+      private static void AddKeyControl(Control parent, string labelText, ComboBox input, string selectedKey, int y, string fallbackKey)
+      {
+        var label = new Label
+        {
+          Text = labelText,
+          Location = new Point(20, y + 5),
+          AutoSize = true,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(220, 226, 230, 236),
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+        };
+
+        input.DropDownStyle = ComboBoxStyle.DropDownList;
+        input.Location = new Point(146, y);
+        input.Size = new Size(150, 26);
+        input.BackColor = Color.FromArgb(38, 42, 49);
+        input.ForeColor = Color.White;
+        input.FlatStyle = FlatStyle.Flat;
+        input.Items.Clear();
+        input.Items.AddRange(new object[]
+        {
+          "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+          "Home", "End", "Insert", "Delete", "PageUp", "PageDown"
+        });
+        var index = input.Items.IndexOf(selectedKey);
+        input.SelectedIndex = index >= 0 ? index : input.Items.IndexOf(fallbackKey);
+
         parent.Controls.Add(label);
         parent.Controls.Add(input);
       }
 
+      private static void AddApiControl(Control parent, ComboBox input, string selectedApi, int y)
+      {
+        var label = new Label
+        {
+          Text = "地图 API",
+          Location = new Point(20, y + 5),
+          AutoSize = true,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(220, 226, 230, 236),
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+        };
+        input.DropDownStyle = ComboBoxStyle.DropDownList;
+        input.Location = new Point(146, y);
+        input.Size = new Size(190, 26);
+        input.BackColor = Color.FromArgb(38, 42, 49);
+        input.ForeColor = Color.White;
+        input.FlatStyle = FlatStyle.Flat;
+        input.Items.Clear();
+        input.Items.AddRange(new object[] { "主 API", "备用 API (slmaps.com)" });
+        input.SelectedIndex = string.Equals(selectedApi, "Backup", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+        parent.Controls.Add(label);
+        parent.Controls.Add(input);
+      }
+
+      private static void AddSectionLabel(Control parent, string text, int x, int y)
+      {
+        var label = new Label
+        {
+          Text = text,
+          Location = new Point(x, y),
+          AutoSize = true,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(232, 89, 12),
+          Font = new Font(FontFamily.GenericSansSerif, 8f, FontStyle.Bold),
+        };
+        parent.Controls.Add(label);
+      }
+
+      private static string FormatSliderValue(int value, bool isScale)
+      {
+        return isScale ? $"{value / 1000f:0.000}x" : $"{value / 10f:0.0}";
+      }
+
       private void ApplyControlSettings()
       {
-        _settings.CoreScale = _scaleInput.Value / 100f;
-        _settings.CoreOffsetX = _offsetXInput.Value;
-        _settings.CoreOffsetY = _offsetYInput.Value;
-        _settings.LczScale = _lczScaleInput.Value / 100f;
-        _settings.LczOffsetX = _lczOffsetXInput.Value;
-        _settings.LczOffsetY = _lczOffsetYInput.Value;
+        _settings.CoreScale = _scaleInput.Value / 1000f;
+        _settings.CoreOffsetX = _offsetXInput.Value / 10f;
+        _settings.CoreOffsetY = _offsetYInput.Value / 10f;
+        _settings.LczScale = _lczScaleInput.Value / 1000f;
+        _settings.LczOffsetX = _lczOffsetXInput.Value / 10f;
+        _settings.LczOffsetY = _lczOffsetYInput.Value / 10f;
         Invalidate();
       }
 
       private void SaveControlSettings()
       {
         ApplyControlSettings();
+        _settings.Hotkey = _overlayHotkeyInput.SelectedItem?.ToString() ?? "F8";
+        _settings.SeedHotkey = _seedHotkeyInput.SelectedItem?.ToString() ?? "PageDown";
+        _settings.ApiSource = _apiInput.SelectedIndex == 1 ? "Backup" : "Primary";
+        if (_controlPanel is not null)
+        {
+          _controlPanel.Visible = false;
+        }
         try
         {
           var path = Path.Combine(AppContext.BaseDirectory, "overlay.json");
           File.WriteAllText(path, JsonSerializer.Serialize(_settings, new JsonSerializerOptions { WriteIndented = true }));
+          if (IsHandleCreated && !IsDisposed)
+          {
+            UnregisterHotKey(Handle, HotkeyId);
+            RegisterOverlayHotkey();
+          }
+          if (_controlPanel is not null)
+          {
+            _controlPanel.Visible = false;
+          }
           Log("配置已保存");
         }
         catch (IOException exception)
@@ -416,9 +647,11 @@ public sealed class MainForm : Form
       private void HandleMapMouseDown(object? sender, MouseEventArgs e)
       {
         if (e.Button != MouseButtons.Left || _controlPanel?.Bounds.Contains(e.Location) == true) return;
+        var region = GetMapRegionAt(e.Location);
+        if (region < 0) return;
         _dragging = true;
         _dragStart = e.Location;
-        _draggingLcz = IsLczAt(e.Location);
+        _draggingLcz = region == 1;
         _dragStartX = _draggingLcz ? _settings.LczOffsetX : _settings.CoreOffsetX;
         _dragStartY = _draggingLcz ? _settings.LczOffsetY : _settings.CoreOffsetY;
         Log($"开始拖动 {(_draggingLcz ? "LCZ" : "EZ/HCZ")}");
@@ -438,13 +671,13 @@ public sealed class MainForm : Form
         var dy = e.Y - _dragStart.Y;
         if (_draggingLcz)
         {
-          _settings.LczOffsetX = _dragStartX + dx;
-          _settings.LczOffsetY = _dragStartY + dy;
+          _settings.LczOffsetX = Math.Clamp(_dragStartX + dx, -2000f, 2000f);
+          _settings.LczOffsetY = Math.Clamp(_dragStartY + dy, -1000f, 1000f);
         }
         else
         {
-          _settings.CoreOffsetX = _dragStartX + dx;
-          _settings.CoreOffsetY = _dragStartY + dy;
+          _settings.CoreOffsetX = Math.Clamp(_dragStartX + dx, -2000f, 2000f);
+          _settings.CoreOffsetY = Math.Clamp(_dragStartY + dy, -1000f, 1000f);
         }
         UpdateControlInputs();
         Invalidate();
@@ -482,17 +715,19 @@ public sealed class MainForm : Form
 
       private void HandleMapMouseWheel(object? sender, MouseEventArgs e)
       {
-        var isLcz = IsLczAt(e.Location);
+        var region = GetMapRegionAt(e.Location);
+        if (region < 0) return;
+        var isLcz = region == 1;
         var factor = e.Delta > 0 ? 1.1f : 1f / 1.1f;
         if (isLcz)
         {
-          _settings.LczScale = Math.Clamp(_settings.LczScale * factor, 0.1f, 3f);
-          _lczScaleInput.Value = (int)Math.Clamp(_settings.LczScale * 100, 0, 150);
+          _settings.LczScale = Math.Clamp(_settings.LczScale * factor, 0.1f, 1.5f);
+          _lczScaleInput.Value = (int)Math.Clamp(_settings.LczScale * 1000, ScaleSliderMin, ScaleSliderMax);
         }
         else
         {
-          _settings.CoreScale = Math.Clamp(_settings.CoreScale * factor, 0.1f, 3f);
-          _scaleInput.Value = (int)Math.Clamp(_settings.CoreScale * 100, 0, 150);
+          _settings.CoreScale = Math.Clamp(_settings.CoreScale * factor, 0.1f, 1.5f);
+          _scaleInput.Value = (int)Math.Clamp(_settings.CoreScale * 1000, ScaleSliderMin, ScaleSliderMax);
         }
         SaveControlSettings();
         Invalidate();
@@ -503,24 +738,21 @@ public sealed class MainForm : Form
         }
       }
 
-      private bool IsLczAt(Point point)
+      private int GetMapRegionAt(Point point)
       {
-        if (_map is null) return false;
-        var rooms = _map.Zones.Where(zone => string.Equals(zone.Key, "LightContainment", StringComparison.OrdinalIgnoreCase))
-          .SelectMany(zone => zone.Value).ToList();
-        if (rooms.Count == 0) return false;
-        var center = new Point(ClientSize.Width - ClientSize.Width / 4, ClientSize.Height / 3);
-        return Math.Abs(point.X - center.X) < ClientSize.Width / 3 && point.Y < ClientSize.Height * .72;
+        if (_lczMapBounds.Contains(point)) return 1;
+        if (_coreMapBounds.Contains(point)) return 0;
+        return -1;
       }
 
       private void UpdateControlInputs()
       {
-        _scaleInput.Value = (int)Math.Clamp(_settings.CoreScale * 100, 0, 150);
-        _offsetXInput.Value = (int)Math.Clamp(_settings.CoreOffsetX, -2500, 2000);
-        _offsetYInput.Value = (int)Math.Clamp(_settings.CoreOffsetY, -2500, 2000);
-        _lczScaleInput.Value = (int)Math.Clamp(_settings.LczScale * 100, 0, 150);
-        _lczOffsetXInput.Value = (int)Math.Clamp(_settings.LczOffsetX, -2500, 2000);
-        _lczOffsetYInput.Value = (int)Math.Clamp(_settings.LczOffsetY, -2500, 2000);
+        _scaleInput.Value = (int)Math.Clamp(_settings.CoreScale * 1000, ScaleSliderMin, ScaleSliderMax);
+        _offsetXInput.Value = (int)Math.Clamp(_settings.CoreOffsetX * 10, OffsetXSliderMin, OffsetXSliderMax);
+        _offsetYInput.Value = (int)Math.Clamp(_settings.CoreOffsetY * 10, OffsetYSliderMin, OffsetYSliderMax);
+        _lczScaleInput.Value = (int)Math.Clamp(_settings.LczScale * 1000, ScaleSliderMin, ScaleSliderMax);
+        _lczOffsetXInput.Value = (int)Math.Clamp(_settings.LczOffsetX * 10, OffsetXSliderMin, OffsetXSliderMax);
+        _lczOffsetYInput.Value = (int)Math.Clamp(_settings.LczOffsetY * 10, OffsetYSliderMin, OffsetYSliderMax);
       }
 
       private static void Log(string message)
@@ -619,11 +851,23 @@ public sealed class MainForm : Form
         var positions = new Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)>();
         foreach (var room in coreRooms)
         {
-          positions[room] = (-room.X, -room.Z, room.Conn.Select(connection => new RoomConnection { Dx = -connection.Dx, Dz = -connection.Dz }).ToList());
+          positions[room] = (-room.X, -room.Z, room.Conn.Select(connection => new RoomConnection
+          {
+            Dx = -connection.Dx,
+            Dz = -connection.Dz,
+            TargetX = connection.TargetX ?? room.X + connection.Dx * 15f,
+            TargetZ = connection.TargetZ ?? room.Z + connection.Dz * 15f,
+          }).ToList());
         }
         foreach (var room in lightRooms)
         {
-          positions[room] = (room.X, room.Z, room.Conn);
+          positions[room] = (room.X, room.Z, room.Conn.Select(connection => new RoomConnection
+          {
+            Dx = connection.Dx,
+            Dz = connection.Dz,
+            TargetX = connection.TargetX ?? room.X + connection.Dx * 15f,
+            TargetZ = connection.TargetZ ?? room.Z + connection.Dz * 15f,
+          }).ToList());
         }
 
         var alignedPositions = AlignConnectedRooms(rooms, positions);
@@ -652,6 +896,7 @@ public sealed class MainForm : Form
         var lightSpan = Math.Max(1f, Math.Max(lightMaxX - lightMinX, lightMaxZ - lightMinZ));
         var coreScale = Math.Clamp(Math.Min((ClientSize.Width / 2f - padding * 2) / coreSpan, (ClientSize.Height - padding * 2) / coreSpan) * _settings.CoreScale, 1f, 100f);
         var lczScale = Math.Clamp(Math.Min((ClientSize.Width / 2f - padding * 2) / lightSpan, (ClientSize.Height - padding * 2) / lightSpan) * _settings.LczScale, 1f, 100f);
+        const float verticalCompression = 0.78f;
 
         PointF ToPoint(RoomData room)
         {
@@ -670,48 +915,65 @@ public sealed class MainForm : Form
           var regionHeight = isLcz ? lightMaxZ - lightMinZ : (isEz || isHcz ? connectedMaxZ - connectedMinZ : coreMaxZ - coreMinZ);
           return new PointF(
             baseX + (localX - regionWidth / 2f) * activeScale + offsetX,
-            baseY + (regionHeight / 2f - localZ) * activeScale + offsetY);
+            baseY + (regionHeight / 2f - localZ) * activeScale * verticalCompression + offsetY);
         }
 
         using var borderPen = new Pen(Color.FromArgb(210, 42, 42, 42), 1.2f);
         using var corridorBrush = new SolidBrush(Color.FromArgb(235, 25, 26, 29));
         using var labelBrush = new SolidBrush(Color.White);
+        var roomOrder = rooms
+          .Select((room, index) => (room, index))
+          .ToDictionary(item => item.room, item => item.index);
+
+        // Draw the connectors first so each room body hides the line ends and the map reads as one continuous corridor network.
+        foreach (var room in rooms)
+        {
+          var point = ToPoint(room);
+          var activeScale = IsLightContainmentRoom(room) ? lczScale : coreScale;
+          var connectorWidth = 0.44f * 15f * activeScale;
+          var connections = alignedPositions[room].Connections;
+          foreach (var connection in connections)
+          {
+            var target = FindConnectedRoom(room, connection, rooms);
+            if (target is null || roomOrder[room] >= roomOrder[target])
+            {
+              continue;
+            }
+
+            var targetPoint = ToPoint(target);
+            using var connectorPen = new Pen(corridorBrush.Color, connectorWidth)
+            {
+              StartCap = LineCap.Round,
+              EndCap = LineCap.Round,
+              LineJoin = LineJoin.Round,
+            };
+            e.Graphics.DrawLine(connectorPen, point, targetPoint);
+          }
+        }
 
         _roomHitBoxes.Clear();
+        _coreMapBounds = RectangleF.Empty;
+        _lczMapBounds = RectangleF.Empty;
         foreach (var room in rooms)
         {
           var point = ToPoint(room);
           var activeScale = string.Equals(room.Zone, "LightContainment", StringComparison.OrdinalIgnoreCase) ? lczScale : coreScale;
           var cell = 15f * activeScale;
-          var arm = 0.44f * cell;
-          var connections = alignedPositions[room].Connections;
-          foreach (var connection in connections)
-          {
-            if (connection.Dx == 0 && connection.Dz == 0)
-            {
-              continue;
-            }
-
-            var drawOnce = connection.Dx > 0 || (connection.Dx == 0 && connection.Dz > 0);
-            if (!drawOnce)
-            {
-              continue;
-            }
-
-            var length = cell / 2f + 1f;
-            var horizontal = connection.Dx != 0;
-            var width = horizontal ? length : arm;
-            var height = horizontal ? arm : length;
-            var screenDx = -connection.Dx;
-            var screenDz = -connection.Dz;
-            var x = point.X + (screenDx > 0 ? 0 : screenDx < 0 ? -length : -arm / 2f);
-            var y = point.Y + (screenDz > 0 ? 0 : screenDz < 0 ? -length : -arm / 2f);
-            e.Graphics.FillRectangle(corridorBrush, x, y, width, height);
-          }
 
           var widthRoom = 0.88f * cell;
           var heightRoom = 0.62f * cell;
-          _roomHitBoxes[room] = new RectangleF(point.X - widthRoom / 2, point.Y - heightRoom / 2, widthRoom, heightRoom);
+          var hitBox = new RectangleF(point.X - widthRoom / 2, point.Y - heightRoom / 2, widthRoom, heightRoom);
+          _roomHitBoxes[room] = hitBox;
+          var regionBounds = hitBox;
+          regionBounds.Inflate(cell * 0.55f, cell * 0.55f);
+          if (IsLightContainmentRoom(room))
+          {
+            _lczMapBounds = _lczMapBounds.IsEmpty ? regionBounds : RectangleF.Union(_lczMapBounds, regionBounds);
+          }
+          else
+          {
+            _coreMapBounds = _coreMapBounds.IsEmpty ? regionBounds : RectangleF.Union(_coreMapBounds, regionBounds);
+          }
           DrawRoomBody(e.Graphics, room, point, widthRoom, heightRoom, corridorBrush, borderPen);
 
           var label = GetRoomDisplayName(room);
@@ -725,6 +987,18 @@ public sealed class MainForm : Form
           }
         }
 
+      }
+
+      private static RoomData? FindConnectedRoom(RoomData room, RoomConnection connection, IReadOnlyCollection<RoomData> rooms)
+      {
+        var targetX = connection.TargetX ?? (room.X + connection.Dx * 15f);
+        var targetZ = connection.TargetZ ?? (room.Z + connection.Dz * 15f);
+
+        return rooms.FirstOrDefault(candidate =>
+          !ReferenceEquals(candidate, room)
+          && Math.Abs(candidate.X - targetX) < 0.01f
+          && Math.Abs(candidate.Y - room.Y) < 0.01f
+          && Math.Abs(candidate.Z - targetZ) < 0.01f);
       }
 
       private static void DrawRoomBody(Graphics graphics, RoomData room, PointF center, float width, float height, Brush fill, Pen border)
@@ -914,14 +1188,14 @@ public sealed class MainForm : Form
           || trimmed.StartsWith("LCZ", StringComparison.OrdinalIgnoreCase);
       }
 
-      private static string GetRoomDisplayName(RoomData room)
+      private string GetRoomDisplayName(RoomData room)
       {
         var candidate = room.Short;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return candidate;
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return TranslateRoomName(candidate);
         candidate = room.Code;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return candidate;
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return TranslateRoomName(candidate);
         candidate = room.Label;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return candidate;
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return TranslateRoomName(candidate);
         candidate = room.Name;
         if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate))
         {
@@ -937,7 +1211,7 @@ public sealed class MainForm : Form
               var trimmed = candidate[prefix.Length..].Trim();
               if (!string.IsNullOrWhiteSpace(trimmed) && !IsUnnamedRoomName(trimmed) && !IsHiddenRoomName(trimmed))
               {
-                return trimmed;
+                return TranslateRoomName(trimmed);
               }
               break;
             }
@@ -946,11 +1220,85 @@ public sealed class MainForm : Form
           var normalized = candidate.Trim();
           if (!IsZoneCodeLabel(normalized) && !IsHiddenRoomName(normalized))
           {
-            return normalized;
+            return TranslateRoomName(normalized);
+          }
+        }
+
+        var variant = room.Variant?.Trim();
+        if (!string.IsNullOrWhiteSpace(variant))
+        {
+          variant = variant.Replace("(Clone)", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+          foreach (var prefix in new[] { "EZ_", "HCZ_", "LCZ_" })
+          {
+            if (variant.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+              variant = variant[prefix.Length..].Trim();
+              break;
+            }
+          }
+
+          variant = variant.Replace('_', ' ');
+          if (!string.IsNullOrWhiteSpace(variant) && !IsUnnamedRoomName(variant))
+          {
+            return variant;
           }
         }
 
         return string.Empty;
+      }
+
+      private string TranslateRoomName(string name)
+      {
+        if (!_isBackupMap || string.IsNullOrWhiteSpace(name)) return name;
+
+        return _roomTranslations.TryGetValue(name.Trim(), out var translated) ? translated : name;
+      }
+
+      private static IReadOnlyDictionary<string, string> LoadRoomTranslations()
+      {
+        var paths = new List<string>
+        {
+          Path.Combine(Environment.CurrentDirectory, "room.txt"),
+          Path.Combine(AppContext.BaseDirectory, "room.txt")
+        };
+
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var level = 0; level < 4 && directory.Parent is not null; level++)
+        {
+          directory = directory.Parent;
+          paths.Add(Path.Combine(directory.FullName, "room.txt"));
+        }
+
+        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+          if (!File.Exists(path)) continue;
+
+          try
+          {
+            var translations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in File.ReadLines(path))
+            {
+              var separator = line.IndexOf('=');
+              if (separator <= 0 || separator >= line.Length - 1) continue;
+
+              var englishName = line[..separator].Trim();
+              var chineseName = line[(separator + 1)..].Trim();
+              if (englishName.Length > 0 && chineseName.Length > 0)
+              {
+                translations[englishName] = chineseName;
+              }
+            }
+
+            return translations;
+          }
+          catch (IOException exception)
+          {
+            Log($"房间翻译文件读取失败: {exception.Message}");
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+          }
+        }
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
       }
 
       private static Color GetCategoryColor(string category) => category switch

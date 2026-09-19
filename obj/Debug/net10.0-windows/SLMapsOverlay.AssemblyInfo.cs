@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("SLMapsOverlay")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+d73e38e14c51e14a4025373a4392b48c65f49019")]
 [assembly: System.Reflection.AssemblyProductAttribute("SLMapsOverlay")]
 [assembly: System.Reflection.AssemblyTitleAttribute("SLMapsOverlay")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

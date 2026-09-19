@@ -6,12 +6,14 @@
   "Scale": 1,
   "MapOffsetX": 0,
   "MapOffsetY": 0,
-  "CoreScale": 0.65,
-  "CoreOffsetX": 939,
-  "CoreOffsetY": -341,
-  "LczScale": 0.35,
-  "LczOffsetX": -327,
-  "LczOffsetY": -359,
+  "CoreScale": 0.57,
+  "CoreOffsetX": 984.5,
+  "CoreOffsetY": -351,
+  "LczScale": 0.311,
+  "LczOffsetX": -191,
+  "LczOffsetY": -351,
   "Opacity": 1,
-  "Hotkey": "F8"
+  "Hotkey": "F8",
+  "SeedHotkey": "PageDown",
+  "ApiSource": "Primary"
 }
