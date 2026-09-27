@@ -14,6 +14,8 @@ api-*.json
 backup-api-*.json
 backup_api.txt
 GameAssembly.dll
+.tools/
+__pycache__/
 
 # Local IDE files
 .idea/

@@ -12,6 +12,9 @@ public sealed class MapApiResponse
     [JsonPropertyName("version")]
     public int Version { get; set; }
 
+    [JsonPropertyName("atlasIndex")]
+    public Dictionary<string, int> AtlasIndex { get; set; } = new();
+
     [JsonPropertyName("zones")]
     public Dictionary<string, List<RoomData>> Zones { get; set; } = new();
 }

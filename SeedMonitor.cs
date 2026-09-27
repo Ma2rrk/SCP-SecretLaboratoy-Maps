@@ -8,6 +8,16 @@ namespace SLMapsOverlay;
 
 public static partial class SeedMonitor
 {
+    private sealed class LogReadState
+    {
+        public long Position { get; set; }
+        public DateTime CreationTimeUtc { get; set; }
+        public string PendingLine { get; set; } = string.Empty;
+        public long LatestSeed { get; set; }
+    }
+
+    private static readonly object StateLock = new();
+    private static readonly Dictionary<string, LogReadState> ReadStates = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Regex[] SeedRegexes =
     {
         new("Map\\s+seed\\s+is\\s*:\\s*(-?\\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
@@ -65,35 +75,37 @@ public static partial class SeedMonitor
         {
             const int tailBytes = 256 * 1024;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (stream.Length > tailBytes)
+            var creationTimeUtc = File.GetCreationTimeUtc(path);
+            lock (StateLock)
             {
-                stream.Seek(-tailBytes, SeekOrigin.End);
-            }
-
-            using var reader = new StreamReader(stream);
-            var lines = new Queue<string>(512);
-            while (reader.ReadLine() is { } line)
-            {
-                if (lines.Count == 512) lines.Dequeue();
-                lines.Enqueue(line);
-            }
-
-            foreach (var line in lines.Reverse())
-            {
-                foreach (var regex in SeedRegexes)
+                if (!ReadStates.TryGetValue(path, out var state)
+                    || stream.Length < state.Position || state.CreationTimeUtc != creationTimeUtc)
                 {
-                    var match = regex.Match(line);
-                    if (!match.Success)
+                    state = new LogReadState
                     {
-                        continue;
-                    }
-
-                    var value = match.Groups[1].Value;
-                    if (long.TryParse(value, out seed) && seed >= 1 && seed <= int.MaxValue)
-                    {
-                        return true;
-                    }
+                        Position = Math.Max(0, stream.Length - tailBytes),
+                        CreationTimeUtc = creationTimeUtc,
+                    };
+                    ReadStates[path] = state;
                 }
+
+                if (state.Position == stream.Length)
+                {
+                    seed = state.LatestSeed;
+                    return seed > 0;
+                }
+
+                stream.Position = state.Position;
+                using var reader = new StreamReader(stream);
+                var appendedText = reader.ReadToEnd();
+                state.Position = stream.Position;
+                var lines = (state.PendingLine + appendedText).Split('\n');
+                state.PendingLine = lines[^1];
+                foreach (var line in lines.Skip(Math.Max(0, lines.Length - 512)))
+                    ReadSeedFromLine(line, state);
+
+                seed = state.LatestSeed;
+                return seed > 0;
             }
         }
         catch
@@ -101,7 +113,21 @@ public static partial class SeedMonitor
             return false;
         }
 
-        return false;
+    }
+
+    private static void ReadSeedFromLine(string line, LogReadState state)
+    {
+        line = line.TrimEnd('\r');
+        foreach (var regex in SeedRegexes)
+        {
+            var match = regex.Match(line);
+            if (match.Success && long.TryParse(match.Groups[1].Value, out var value)
+                && value >= 1 && value <= int.MaxValue)
+            {
+                state.LatestSeed = value;
+                return;
+            }
+        }
     }
 
     public static IEnumerable<string> GetCandidateLogPaths()

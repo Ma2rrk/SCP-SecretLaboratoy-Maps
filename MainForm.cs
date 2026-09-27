@@ -30,6 +30,9 @@ internal sealed class OverlaySettings
   public float LczOffsetX { get; set; }
   public float LczOffsetY { get; set; }
   public double Opacity { get; set; } = 1.0;
+  public float MapOpacity { get; set; } = 1.0f;
+  public int RoomColorArgb { get; set; } = Color.FromArgb(235, 25, 26, 29).ToArgb();
+  public int ConnectionColorArgb { get; set; } = Color.FromArgb(235, 25, 26, 29).ToArgb();
   public string Hotkey { get; set; } = "F8";
   public string SeedHotkey { get; set; } = "PageDown";
   public string ApiSource { get; set; } = "Primary";
@@ -172,6 +175,7 @@ public sealed class MainForm : Form
       Timeout = TimeSpan.FromSeconds(15)
     };
     private readonly System.Windows.Forms.Timer _timer = new();
+    private readonly System.Windows.Forms.Timer _settingsSaveTimer = new() { Interval = 400 };
     private readonly OverlaySettings _settings = OverlaySettings.Load();
     private readonly TransparentTrackBar _scaleInput = new();
     private readonly TransparentTrackBar _offsetXInput = new();
@@ -179,6 +183,9 @@ public sealed class MainForm : Form
     private readonly TransparentTrackBar _lczScaleInput = new();
     private readonly TransparentTrackBar _lczOffsetXInput = new();
     private readonly TransparentTrackBar _lczOffsetYInput = new();
+    private readonly TransparentTrackBar _mapOpacityInput = new();
+    private readonly Button _roomColorInput = new();
+    private readonly Button _connectionColorInput = new();
     private readonly ComboBox _overlayHotkeyInput = new();
     private readonly ComboBox _seedHotkeyInput = new();
     private readonly ComboBox _apiInput = new();
@@ -214,6 +221,7 @@ public sealed class MainForm : Form
       public List<RoomData> LightRooms { get; init; } = new();
       public List<RoomData> CoreRooms { get; init; } = new();
       public List<RoomData> ConnectedCoreRooms { get; init; } = new();
+      public Dictionary<(int X, int Y, int Z), List<(RoomData Room, int Order)>> RoomIndex { get; init; } = new();
       public Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)> AlignedPositions { get; init; } = new();
       public float ConnectedMinX { get; init; }
       public float ConnectedMaxX { get; init; }
@@ -270,6 +278,11 @@ public sealed class MainForm : Form
         MouseMove += HandleMapMouseMove;
         MouseUp += HandleMapMouseUp;
         MouseWheel += HandleMapMouseWheel;
+        _settingsSaveTimer.Tick += (_, _) =>
+        {
+          _settingsSaveTimer.Stop();
+          SaveControlSettings();
+        };
         ClearLog();
         Log("程序启动，覆盖层已创建");
 
@@ -319,20 +332,17 @@ public sealed class MainForm : Form
         FormClosed += (_, _) =>
         {
           _timer.Stop();
+          _settingsSaveTimer.Stop();
           Interlocked.Exchange(ref _mapLoadCancellation, null)?.Cancel();
           SaveControlSettings();
+          _settingsSaveTimer.Dispose();
           if (IsHandleCreated) UnregisterHotKey(Handle, HotkeyId);
         };
     }
 
-    private static string GetPlayerLogPath()
-    {
-      return @"C:\Users\Administrator\AppData\LocalLow\Northwood\SCPSL\Player.log";
-    }
-
     private async Task PollForSeedAsync()
     {
-        if (_isPolling || !SeedMonitor.TryGetLatestSeed(GetPlayerLogPath(), out var latestSeed))
+        if (_isPolling || !SeedMonitor.TryGetLatestSeed(null, out var latestSeed))
         {
             return;
         }
@@ -404,7 +414,7 @@ public sealed class MainForm : Form
               _map = localData;
               _mapLayout = null;
               _isBackupMap = false;
-              _roomTranslations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+              _roomTranslations = LoadRoomTranslations();
               _currentSeed = seed;
               Log($"本地地图已生成，seed={seed}，区域数={localData.Zones.Count}");
               Invalidate();
@@ -480,9 +490,7 @@ public sealed class MainForm : Form
             _map = data;
             _mapLayout = null;
             _isBackupMap = responseUsesBackupFormat;
-            _roomTranslations = responseUsesBackupFormat
-              ? LoadRoomTranslations()
-              : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            _roomTranslations = LoadRoomTranslations();
             _currentSeed = seed;
             Log($"地图解析成功，区域数={data.Zones.Count}，开始重绘");
             Invalidate();
@@ -642,14 +650,14 @@ public sealed class MainForm : Form
         var panel = new TransparentPanel
         {
           Location = new Point(16, 16),
-          Size = new Size(370, 610),
+          Size = new Size(370, 780),
           ForeColor = Color.White,
           Padding = new Padding(18),
         };
 
         var title = new Label
         {
-          Text = "地图控制",
+          Text = "设置面板",
           Location = new Point(18, 16),
           AutoSize = true,
           BackColor = Color.Transparent,
@@ -675,6 +683,7 @@ public sealed class MainForm : Form
         _settings.CoreOffsetY = Math.Clamp(_settings.CoreOffsetY, -1000f, 1000f);
         _settings.LczOffsetX = Math.Clamp(_settings.LczOffsetX, -2000f, 2000f);
         _settings.LczOffsetY = Math.Clamp(_settings.LczOffsetY, -1000f, 1000f);
+        _settings.MapOpacity = Math.Clamp(_settings.MapOpacity, 0.1f, 1f);
 
         AddSectionLabel(panel, "核心区 / EZ + HCZ", 20, 68);
         AddSectionLabel(panel, "LCZ / 轻收容区", 20, 218);
@@ -686,9 +695,15 @@ public sealed class MainForm : Form
         AddSliderControl(panel, "LCZ X", _lczOffsetXInput, -2500, 2000, (int)Math.Clamp(_settings.LczOffsetX, -2500, 2000), 178);
         AddSliderControl(panel, "LCZ Y", _lczOffsetYInput, -2500, 2000, (int)Math.Clamp(_settings.LczOffsetY, -2500, 2000), 212);
 
-        AddKeyControl(panel, "面板快捷键", _overlayHotkeyInput, _settings.Hotkey, 398, "F8");
-        AddKeyControl(panel, "获取种子键", _seedHotkeyInput, _settings.SeedHotkey, 434, "PageDown");
-        AddApiControlFixed(panel, _apiInput, _settings.ApiSource, 470);
+        AddSectionLabel(panel, "地图样式", 20, 364);
+        AddSliderControl(panel, "地图透明度", _mapOpacityInput, 10, 100,
+          (int)Math.Clamp(_settings.MapOpacity * 100, 10, 100), 382);
+        AddColorControl(panel, "房间颜色", _roomColorInput, _settings.RoomColorArgb, 428);
+        AddColorControl(panel, "连接颜色", _connectionColorInput, _settings.ConnectionColorArgb, 462);
+
+        AddKeyControl(panel, "面板快捷键", _overlayHotkeyInput, _settings.Hotkey, 500, "F8");
+        AddKeyControl(panel, "获取种子键", _seedHotkeyInput, _settings.SeedHotkey, 536, "PageDown");
+        AddApiControlFixed(panel, _apiInput, _settings.ApiSource, 572);
         _apiInput.SelectedIndexChanged += async (_, _) =>
         {
           if (_currentSeed <= 0) return;
@@ -704,7 +719,7 @@ public sealed class MainForm : Form
 
         _cacheInfoLabel = new Label
         {
-          Location = new Point(20, 570),
+          Location = new Point(20, 730),
           Size = new Size(170, 24),
           BackColor = Color.Transparent,
           ForeColor = Color.FromArgb(190, 220, 220, 220),
@@ -714,7 +729,7 @@ public sealed class MainForm : Form
         var clearCacheButton = new Button
         {
           Text = "删除缓存 JSON",
-          Location = new Point(210, 570),
+          Location = new Point(210, 730),
           Size = new Size(145, 30),
           FlatStyle = FlatStyle.Flat,
           BackColor = Color.FromArgb(70, 74, 82),
@@ -729,7 +744,7 @@ public sealed class MainForm : Form
         var saveButton = new Button
         {
           Text = "保存设置",
-          Location = new Point(18, 530),
+          Location = new Point(18, 682),
           Size = new Size(136, 32),
           FlatStyle = FlatStyle.Flat,
           BackColor = Color.FromArgb(232, 89, 12),
@@ -744,13 +759,12 @@ public sealed class MainForm : Form
         var hint = new Label
         {
           Text = "缩放 0.1-1.5x | 偏移 X±2000 / Y±1000",
-          Location = new Point(166, 539),
+          Location = new Point(166, 691),
           AutoSize = true,
           BackColor = Color.Transparent,
           ForeColor = Color.FromArgb(190, 220, 220, 220),
           Font = new Font(FontFamily.GenericSansSerif, 7.5f),
         };
-        hint.Text = "缩放 0.1-1.5x | X +/-2000 | Y +/-1000";
         panel.Controls.Add(hint);
 
         _scaleInput.ValueChanged += (_, _) => ApplyControlSettings();
@@ -759,21 +773,26 @@ public sealed class MainForm : Form
         _lczScaleInput.ValueChanged += (_, _) => ApplyControlSettings();
         _lczOffsetXInput.ValueChanged += (_, _) => ApplyControlSettings();
         _lczOffsetYInput.ValueChanged += (_, _) => ApplyControlSettings();
+        _mapOpacityInput.ValueChanged += (_, _) => ApplyControlSettings();
         return panel;
       }
 
       private void AddSliderControl(Control parent, string labelText, TrackBar input, int minimum, int maximum, int value, int y)
       {
         var isScale = input == _scaleInput || input == _lczScaleInput;
+        var isOpacity = input == _mapOpacityInput;
         y = input == _scaleInput ? 82
           : input == _offsetXInput ? 124
           : input == _offsetYInput ? 166
           : input == _lczScaleInput ? 232
           : input == _lczOffsetXInput ? 274
-          : 316;
+          : input == _lczOffsetYInput ? 316
+          : 382;
         minimum = isScale ? ScaleSliderMin
+          : isOpacity ? 100
           : input == _offsetYInput || input == _lczOffsetYInput ? OffsetYSliderMin : OffsetXSliderMin;
         maximum = isScale ? ScaleSliderMax
+          : isOpacity ? 1000
           : input == _offsetYInput || input == _lczOffsetYInput ? OffsetYSliderMax : OffsetXSliderMax;
         value *= 10;
         var label = new Label
@@ -805,11 +824,50 @@ public sealed class MainForm : Form
           ForeColor = Color.FromArgb(255, 180, 133),
           Font = new Font(FontFamily.GenericMonospace, 8f, FontStyle.Bold),
         };
-        valueLabel.Text = FormatSliderValue(input.Value, isScale);
-        input.ValueChanged += (_, _) => valueLabel.Text = FormatSliderValue(input.Value, isScale);
+        valueLabel.Text = FormatSliderValue(input.Value, isScale, isOpacity);
+        input.ValueChanged += (_, _) => valueLabel.Text = FormatSliderValue(input.Value, isScale, isOpacity);
         parent.Controls.Add(label);
         parent.Controls.Add(input);
         parent.Controls.Add(valueLabel);
+      }
+
+      private void AddColorControl(Control parent, string labelText, Button input, int argb, int y)
+      {
+        var label = new Label
+        {
+          Text = labelText,
+          Location = new Point(20, y + 5),
+          AutoSize = true,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(220, 226, 230, 236),
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+        };
+        input.Location = new Point(146, y);
+        input.Size = new Size(190, 26);
+        input.FlatStyle = FlatStyle.Flat;
+        input.FlatAppearance.BorderColor = Color.FromArgb(150, 190, 196, 204);
+        input.FlatAppearance.BorderSize = 1;
+        input.BackColor = Color.FromArgb(argb);
+        input.ForeColor = Color.White;
+        input.Cursor = Cursors.Hand;
+        input.Text = string.Empty;
+        input.AccessibleName = labelText;
+        input.Click += (_, _) =>
+        {
+          using var dialog = new ColorDialog
+          {
+            Color = input.BackColor,
+            FullOpen = true,
+            AnyColor = true,
+          };
+          if (dialog.ShowDialog(this) != DialogResult.OK) return;
+          input.BackColor = dialog.Color;
+          ApplyControlSettings();
+          _settingsSaveTimer.Stop();
+          _settingsSaveTimer.Start();
+        };
+        parent.Controls.Add(label);
+        parent.Controls.Add(input);
       }
 
       private static void AddKeyControl(Control parent, string labelText, ComboBox input, string selectedKey, int y, string fallbackKey)
@@ -919,9 +977,11 @@ public sealed class MainForm : Form
         parent.Controls.Add(label);
       }
 
-      private static string FormatSliderValue(int value, bool isScale)
+      private static string FormatSliderValue(int value, bool isScale, bool isOpacity)
       {
-        return isScale ? $"{value / 1000f:0.000}x" : $"{value / 10f:0.0}";
+        return isScale ? $"{value / 1000f:0.000}x"
+          : isOpacity ? $"{value / 10f:0}%"
+          : $"{value / 10f:0.0}";
       }
 
       private void ApplyControlSettings()
@@ -932,11 +992,15 @@ public sealed class MainForm : Form
         _settings.LczScale = _lczScaleInput.Value / 1000f;
         _settings.LczOffsetX = _lczOffsetXInput.Value / 10f;
         _settings.LczOffsetY = _lczOffsetYInput.Value / 10f;
+        _settings.MapOpacity = _mapOpacityInput.Value / 1000f;
+        _settings.RoomColorArgb = _roomColorInput.BackColor.ToArgb();
+        _settings.ConnectionColorArgb = _connectionColorInput.BackColor.ToArgb();
         Invalidate();
       }
 
       private void SaveControlSettings(bool closePanel = false, bool reloadMap = false)
       {
+        _settingsSaveTimer.Stop();
         ApplyControlSettings();
         _settings.Hotkey = _overlayHotkeyInput.SelectedItem?.ToString() ?? "F8";
         _settings.SeedHotkey = _seedHotkeyInput.SelectedItem?.ToString() ?? "PageDown";
@@ -1057,7 +1121,8 @@ public sealed class MainForm : Form
           _settings.CoreScale = Math.Clamp(_settings.CoreScale * factor, 0.1f, 1.5f);
           _scaleInput.Value = (int)Math.Clamp(_settings.CoreScale * 1000, ScaleSliderMin, ScaleSliderMax);
         }
-        SaveControlSettings();
+        _settingsSaveTimer.Stop();
+        _settingsSaveTimer.Start();
         Invalidate();
         if (DateTime.UtcNow - _lastZoomLog >= TimeSpan.FromSeconds(1))
         {
@@ -1226,11 +1291,14 @@ public sealed class MainForm : Form
             baseY + (regionHeight / 2f - localZ) * activeScale * verticalCompression + offsetY);
         }
 
-        using var borderPen = new Pen(Color.FromArgb(210, 42, 42, 42), 1.2f);
-        using var corridorBrush = new SolidBrush(Color.FromArgb(235, 25, 26, 29));
-        using var labelBrush = new SolidBrush(Color.White);
-        using var coreConnectorPen = CreateConnectorPen(corridorBrush.Color, 0.44f * 15f * coreScale);
-        using var lightConnectorPen = CreateConnectorPen(corridorBrush.Color, 0.44f * 15f * lczScale);
+        var mapOpacity = Math.Clamp(_settings.MapOpacity, 0.1f, 1f);
+        var roomColor = ApplyMapOpacity(GetConfiguredColor(_settings.RoomColorArgb, Color.FromArgb(235, 25, 26, 29)), mapOpacity);
+        var connectionColor = ApplyMapOpacity(GetConfiguredColor(_settings.ConnectionColorArgb, Color.FromArgb(235, 25, 26, 29)), mapOpacity);
+        using var borderPen = new Pen(ApplyMapOpacity(Color.FromArgb(210, 42, 42, 42), mapOpacity), 1.2f);
+        using var corridorBrush = new SolidBrush(roomColor);
+        using var labelBrush = new SolidBrush(ApplyMapOpacity(Color.White, mapOpacity));
+        using var coreConnectorPen = CreateConnectorPen(connectionColor, 0.44f * 15f * coreScale);
+        using var lightConnectorPen = CreateConnectorPen(connectionColor, 0.44f * 15f * lczScale);
         using var labelFormat = new StringFormat
         {
           Alignment = StringAlignment.Center,
@@ -1251,7 +1319,7 @@ public sealed class MainForm : Form
           var connections = alignedPositions[room].Connections;
           foreach (var connection in connections)
           {
-            var target = FindConnectedRoom(room, connection, rooms);
+            var target = FindConnectedRoom(room, connection, layout.RoomIndex);
             if (target is null || roomOrder[room] >= roomOrder[target])
             {
               continue;
@@ -1337,6 +1405,14 @@ public sealed class MainForm : Form
         }
 
         var aligned = AlignConnectedRooms(rooms, positions);
+        var roomIndex = new Dictionary<(int X, int Y, int Z), List<(RoomData Room, int Order)>>();
+        for (var index = 0; index < rooms.Count; index++)
+        {
+          var room = rooms[index];
+          var key = (BucketCoordinate(room.X), BucketCoordinate(room.Y), BucketCoordinate(room.Z));
+          if (!roomIndex.TryGetValue(key, out var bucket)) roomIndex[key] = bucket = new();
+          bucket.Add((room, index));
+        }
         static float MinOrZero(IReadOnlyList<RoomData> source, Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)> values, bool x)
           => source.Count == 0 ? 0f : (x ? source.Min(room => values[room].X) : source.Min(room => values[room].Z));
         static float MaxOrZero(IReadOnlyList<RoomData> source, Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)> values, bool x)
@@ -1351,6 +1427,7 @@ public sealed class MainForm : Form
           LightRooms = lightRooms,
           CoreRooms = coreRooms,
           ConnectedCoreRooms = connectedCoreRooms,
+          RoomIndex = roomIndex,
           AlignedPositions = aligned,
           CoreMinX = MinOrZero(coreRooms, aligned, true),
           CoreMaxX = MaxOrZero(coreRooms, aligned, true),
@@ -1367,16 +1444,34 @@ public sealed class MainForm : Form
         };
       }
 
-      private static RoomData? FindConnectedRoom(RoomData room, RoomConnection connection, IReadOnlyCollection<RoomData> rooms)
+      private static int BucketCoordinate(float coordinate) => (int)Math.Floor(coordinate * 100f);
+
+      private static RoomData? FindConnectedRoom(RoomData room, RoomConnection connection,
+        Dictionary<(int X, int Y, int Z), List<(RoomData Room, int Order)>> roomIndex)
       {
         var targetX = connection.TargetX ?? (room.X + connection.Dx * 15f);
         var targetZ = connection.TargetZ ?? (room.Z + connection.Dz * 15f);
-
-        return rooms.FirstOrDefault(candidate =>
-          !ReferenceEquals(candidate, room)
-          && Math.Abs(candidate.X - targetX) < 0.01f
-          && Math.Abs(candidate.Y - room.Y) < 0.01f
-          && Math.Abs(candidate.Z - targetZ) < 0.01f);
+        var bucketX = BucketCoordinate(targetX);
+        var bucketY = BucketCoordinate(room.Y);
+        var bucketZ = BucketCoordinate(targetZ);
+        RoomData? match = null;
+        var matchOrder = int.MaxValue;
+        for (var x = bucketX - 1; x <= bucketX + 1; x++)
+          for (var y = bucketY - 1; y <= bucketY + 1; y++)
+            for (var z = bucketZ - 1; z <= bucketZ + 1; z++)
+            {
+              if (!roomIndex.TryGetValue((x, y, z), out var bucket)) continue;
+              foreach (var (candidate, order) in bucket)
+              {
+                if (order >= matchOrder || ReferenceEquals(candidate, room)
+                    || Math.Abs(candidate.X - targetX) >= 0.01f
+                    || Math.Abs(candidate.Y - room.Y) >= 0.01f
+                    || Math.Abs(candidate.Z - targetZ) >= 0.01f) continue;
+                match = candidate;
+                matchOrder = order;
+              }
+            }
+        return match;
       }
 
       private static Pen CreateConnectorPen(Color color, float width) => new(color, width)
@@ -1385,6 +1480,17 @@ public sealed class MainForm : Form
         EndCap = LineCap.Round,
         LineJoin = LineJoin.Round,
       };
+
+      private static Color GetConfiguredColor(int argb, Color fallback)
+      {
+        return argb == 0 ? fallback : Color.FromArgb(argb);
+      }
+
+      private static Color ApplyMapOpacity(Color color, float opacity)
+      {
+        var alpha = (int)Math.Round(color.A * Math.Clamp(opacity, 0.1f, 1f));
+        return Color.FromArgb(Math.Clamp(alpha, 1, 255), color.R, color.G, color.B);
+      }
 
       private static void DrawRoomBody(Graphics graphics, RoomData room, PointF center, float width, float height, Brush fill, Pen border)
       {
@@ -1593,37 +1699,10 @@ public sealed class MainForm : Form
           if (!string.IsNullOrWhiteSpace(translated)) return translated;
         }
         candidate = room.Name;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate))
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate))
         {
-          if (_isBackupMap)
-          {
-            var translated = TranslateRoomName(candidate);
-            if (!string.IsNullOrWhiteSpace(translated)) return translated;
-          }
-
-          foreach (var prefix in new[]
-          {
-            "EZ_", "EZ ", "EZ-", "EZ:", "EZ/",
-            "HCZ_", "HCZ ", "HCZ-", "HCZ:", "HCZ/",
-            "LCZ_", "LCZ ", "LCZ-", "LCZ:", "LCZ/"
-          })
-          {
-            if (candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-              var trimmed = candidate[prefix.Length..].Trim();
-              if (!string.IsNullOrWhiteSpace(trimmed) && !IsUnnamedRoomName(trimmed) && !IsHiddenRoomName(trimmed))
-              {
-                return TranslateRoomName(trimmed);
-              }
-              break;
-            }
-          }
-
-          var normalized = candidate.Trim();
-          if (!IsZoneCodeLabel(normalized) && !IsHiddenRoomName(normalized))
-          {
-            return TranslateRoomName(normalized);
-          }
+          var translated = TranslateRoomName(candidate);
+          if (!string.IsNullOrWhiteSpace(translated)) return translated;
         }
 
         var variant = room.Variant?.Trim();
@@ -1639,15 +1718,19 @@ public sealed class MainForm : Form
 
       private string TranslateRoomName(string name)
       {
-        if (!_isBackupMap || string.IsNullOrWhiteSpace(name)) return name;
+        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
 
         var trimmed = name.Trim().Replace("(Clone)", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+        if (trimmed.Any(character => character is >= '\u4e00' and <= '\u9fff')
+            || !trimmed.Any(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z'))
+          return trimmed;
+
         foreach (var candidate in BuildRoomNameCandidates(trimmed))
         {
           if (_roomTranslations.TryGetValue(candidate, out var translated)) return translated;
         }
 
-        // 备用 API 只显示 room.txt 中存在的中文名称，避免回退显示英文标识。
+        // Keep room identifiers without a Chinese translation off the map.
         return string.Empty;
       }
 

@@ -1,212 +1,265 @@
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.IO;
-using System.Linq;
+using System.Text.Json;
 
 namespace SLMapsOverlay;
 
 internal static class LocalMapGenerator
 {
-    private const long TemplateSeed = 224593721;
-    private const string TemplateFileName = "generated-map-224593721.json";
-    private static readonly Lazy<string> TemplateJson = new(ReadTemplate);
+    private static readonly string[] ZoneOrder = ["LightContainment", "HeavyContainment", "Entrance"];
+    private static readonly Lazy<GenerationData> Data = new(ReadData);
 
     public static MapApiResponse Generate(long seed)
     {
-        var template = MapResponseAdapter.Parse(TemplateJson.Value, TemplateSeed, backup: false);
-        template.Seed = seed;
-        template.Version = 1;
-
-        if (seed != TemplateSeed)
-        {
-            // The template supplies the offline room pool and validated topology.
-            // The seeded pass below varies compatible room identities and orientation.
-            MainForm.LogMessage($"本地地图使用已验证拓扑模板，当前 seed={seed}，精确游戏布局仅支持模板 seed={TemplateSeed}");
-        }
-
-        if (seed != TemplateSeed) ApplySeededLayout(template, seed);
-        ValidateGeneratedMap(template);
-        return template;
-    }
-
-    private static string ReadTemplate()
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, TemplateFileName);
-        if (!File.Exists(path)) throw new FileNotFoundException("本地地图模板不存在", path);
-        return File.ReadAllText(path);
-    }
-
-    private static void ValidateGeneratedMap(MapApiResponse map)
-    {
-        var rooms = map.Zones.Values.SelectMany(rooms => rooms).ToList();
-        if (map.Zones.Count < 3 || rooms.Count < 100)
-        {
-            throw new InvalidDataException("本地地图模板区域或房间数量不足");
-        }
-
-        var coordinates = new HashSet<(float X, float Y, float Z)>();
-        foreach (var room in rooms)
-        {
-            if (!coordinates.Add((room.X, room.Y, room.Z)))
-            {
-                throw new InvalidDataException("本地地图模板包含重复房间坐标");
-            }
-        }
-    }
-
-    private static void ApplySeededLayout(MapApiResponse map, long seed)
-    {
         var random = new LegacyRandom(unchecked((int)seed));
-
-        foreach (var rooms in map.Zones.Values)
+        var map = new MapApiResponse { Seed = seed, Version = 15 };
+        foreach (var zoneName in ZoneOrder)
         {
-            var groups = rooms
-                .GroupBy(room => string.Concat(room.Zone, "|", room.Shape, "|", room.Conn.Count, "|", room.Cx.ToString("0.###", CultureInfo.InvariantCulture), "|", room.Cy.ToString("0.###", CultureInfo.InvariantCulture)))
-                .ToList();
-
-            foreach (var group in groups)
+            var zone = Data.Value.Zones[zoneName];
+            var atlasIndex = random.Next(zone.Atlases.Count);
+            map.AtlasIndex[zoneName] = atlasIndex;
+            var cells = zone.Atlases[atlasIndex].Select(cell => cell.Copy()).ToList();
+            if (zoneName == "Entrance") AlignEntrance(cells, map.Zones["HeavyContainment"]);
+            foreach (var cell in cells)
             {
-                var slots = group.ToList();
-                var descriptors = slots.Select(RoomDescriptor.From).ToList();
-                Shuffle(descriptors, random);
-                for (var i = 0; i < slots.Count; i++) descriptors[i].ApplyTo(slots[i]);
+                cell.Rotation = cell.Rotations[random.Next(cell.Rotations.Length)];
+                if (zoneName == "Entrance") cell.Rotation = (cell.Rotation + 270) % 360;
             }
+            for (var i = cells.Count - 1; i > 0; i--)
+            {
+                var j = random.Next(i + 1);
+                (cells[i], cells[j]) = (cells[j], cells[i]);
+            }
+            map.Zones[zoneName] = SelectRooms(zoneName, cells, zone.Templates, random);
         }
-        var turns = random.Next(4);
-        var offsetX = random.Next(-8, 9) * 15f;
-        var offsetZ = random.Next(-8, 9) * 15f;
+        Validate(map);
+        return map;
+    }
 
-        foreach (var room in map.Zones.Values.SelectMany(rooms => rooms))
+    private static GenerationData ReadData()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "map-generation-data.json");
+        using var stream = File.OpenRead(path);
+        return JsonSerializer.Deserialize<GenerationData>(stream, new JsonSerializerOptions
         {
-            var x = room.X;
-            var z = room.Z;
-            (room.X, room.Z) = turns switch
-            {
-                1 => (-z + offsetX, x + offsetZ),
-                2 => (-x + offsetX, -z + offsetZ),
-                3 => (z + offsetX, -x + offsetZ),
-                _ => (x + offsetX, z + offsetZ),
-            };
-            room.RotY = (room.RotY + turns * 90f) % 360f;
+            PropertyNameCaseInsensitive = true,
+        }) ?? throw new InvalidDataException("地图生成数据为空");
+    }
 
-            foreach (var connection in room.Conn)
+    private static void AlignEntrance(List<AtlasCell> cells, List<RoomData> heavyRooms)
+    {
+        var entrance = cells.Where(cell => cell.SpecificRooms.Contains(13)).ToList();
+        var heavy = heavyRooms.Where(room => room.Variant == "HCZ_EZ_Checkpoint Part").ToList();
+        if (entrance.Count != 2 || heavy.Count != 2)
+            throw new InvalidDataException("HCZ/EZ 检查点数量异常");
+        var offsetX = (int)heavy.Average(room => room.X) + 15 - (int)entrance.Average(cell => cell.X);
+        var offsetZ = (int)heavy.Average(room => room.Z) - (int)entrance.Average(cell => cell.Z);
+        foreach (var cell in cells)
+        {
+            cell.X += offsetX;
+            cell.Z += offsetZ;
+        }
+    }
+
+    private static List<RoomData> SelectRooms(string zoneName, List<AtlasCell> cells,
+        List<RoomTemplate> templates, LegacyRandom random)
+    {
+        var result = new List<RoomData>();
+        var amounts = new int[templates.Count];
+        var templateIndices = templates.Select((template, index) => (template, index))
+            .ToDictionary(item => item.template, item => item.index);
+        var reserved = cells.SelectMany(cell => cell.SpecificRooms).ToHashSet();
+        var adjacentCounts = new Dictionary<(string Name, int X, int Z), int>();
+        var upperCheckpointZ = cells.Where(cell => cell.SpecificRooms.Contains(13))
+            .Select(cell => cell.Z).DefaultIfEmpty().Min();
+        foreach (var cell in cells)
+        {
+            var candidates = new List<RoomTemplate>();
+            for (var index = 0; index < templates.Count; index++)
             {
-                (connection.Dx, connection.Dz) = turns switch
+                var template = templates[index];
+                if (cell.SpecificRooms.Length > 0
+                    ? cell.SpecificRooms.Contains(template.RoomNameId)
+                    : template.ShapeId == cell.ShapeId && !reserved.Contains(template.RoomNameId)
+                        && amounts[index] < template.MaxAmount)
+                    candidates.Add(template);
+            }
+            if (candidates.Count == 0)
+                throw new InvalidDataException($"地图格子没有可用房间: {zoneName} ({cell.X}, {cell.Z})");
+            RoomTemplate? chosen = null;
+            foreach (var candidate in candidates)
+            {
+                if (amounts[templateIndices[candidate]] < candidate.MinAmount)
                 {
-                    1 => (-connection.Dz, connection.Dx),
-                    2 => (-connection.Dx, -connection.Dz),
-                    3 => (connection.Dz, -connection.Dx),
-                    _ => (connection.Dx, connection.Dz),
-                };
+                    chosen = candidate;
+                    break;
+                }
             }
+            if (chosen is null)
+            {
+                var weights = candidates.Select(t =>
+                {
+                    var adjacent = adjacentCounts.GetValueOrDefault((t.Name, cell.X, cell.Z));
+                    return t.ChanceMultiplier * Math.Pow(t.AdjacentChanceMultiplier, adjacent);
+                }).ToArray();
+                var value = random.NextDouble() * weights.Sum();
+                chosen = candidates[^1];
+                for (var i = 0; i < candidates.Count; i++)
+                {
+                    if (value < weights[i])
+                    {
+                        chosen = candidates[i];
+                        break;
+                    }
+                    value -= weights[i];
+                }
+            }
+            amounts[templateIndices[chosen]]++;
+            adjacentCounts[(chosen.Name, cell.X - 15, cell.Z)] =
+                adjacentCounts.GetValueOrDefault((chosen.Name, cell.X - 15, cell.Z)) + 1;
+            adjacentCounts[(chosen.Name, cell.X + 15, cell.Z)] =
+                adjacentCounts.GetValueOrDefault((chosen.Name, cell.X + 15, cell.Z)) + 1;
+            adjacentCounts[(chosen.Name, cell.X, cell.Z - 15)] =
+                adjacentCounts.GetValueOrDefault((chosen.Name, cell.X, cell.Z - 15)) + 1;
+            adjacentCounts[(chosen.Name, cell.X, cell.Z + 15)] =
+                adjacentCounts.GetValueOrDefault((chosen.Name, cell.X, cell.Z + 15)) + 1;
+            var display = chosen.Display;
+            result.Add(new RoomData
+            {
+                Id = result.Count,
+                Name = display.Name,
+                Variant = chosen.Name,
+                Zone = zoneName,
+                Group = display.Group,
+                Label = chosen.Name is "HCZ_EZ_Checkpoint Part" or "EZ_HCZ_Checkpoint Part"
+                    ? (cell.Z == upperCheckpointZ ? "上检查点（通往办公区）" : "下检查点（通往办公区）")
+                    : display.Label,
+                Category = display.Category,
+                Short = chosen.Name is "HCZ_EZ_Checkpoint Part" or "EZ_HCZ_Checkpoint Part"
+                    ? (cell.Z == upperCheckpointZ ? "上检" : "下检")
+                    : display.Short,
+                Glyph = display.Glyph,
+                Code = cell.Code,
+                Shape = cell.ShapeId switch
+                {
+                    1 => "Endroom", 2 => "Straight", 3 => "Curve", 4 => "TShape", 5 => "XShape",
+                    _ => throw new InvalidDataException($"未知房间形状 {cell.ShapeId}"),
+                },
+                X = cell.X,
+                Y = zoneName == "LightContainment" ? 100 : -100,
+                Z = cell.Z,
+                RotY = cell.Rotation,
+                Cx = cell.Cx,
+                Cy = cell.Cy,
+                Conn = cell.Connections[cell.Rotation.ToString()]
+                    .Select(pair => new RoomConnection { Dx = pair[0], Dz = pair[1] }).ToList(),
+            });
         }
+        return result;
     }
 
-    private static void Shuffle<T>(IList<T> values, LegacyRandom random)
+    private static void Validate(MapApiResponse map)
     {
-        for (var i = values.Count - 1; i > 0; i--)
-        {
-            var j = random.Next(i + 1);
-            (values[i], values[j]) = (values[j], values[i]);
-        }
+        if (map.Zones.Count != 3 || map.Zones.Values.Any(rooms => rooms.Count < 20))
+            throw new InvalidDataException("地图区域或房间数量异常");
+        var positions = new HashSet<(float X, float Y, float Z)>();
+        foreach (var room in map.Zones.Values.SelectMany(rooms => rooms))
+            if (!positions.Add((room.X, room.Y, room.Z)))
+                throw new InvalidDataException("地图包含重复房间坐标");
     }
 
-    private sealed class RoomDescriptor
+    private sealed class GenerationData
     {
-        public string Name { get; private init; } = string.Empty;
-        public string Variant { get; private init; } = string.Empty;
-        public string Label { get; private init; } = string.Empty;
-        public string Category { get; private init; } = string.Empty;
-        public string Short { get; private init; } = string.Empty;
-        public string Glyph { get; private init; } = string.Empty;
-        public string Code { get; private init; } = string.Empty;
+        public Dictionary<string, GenerationZone> Zones { get; set; } = new();
+    }
 
-        public static RoomDescriptor From(RoomData room) => new()
+    private sealed class GenerationZone
+    {
+        public List<List<AtlasCell>> Atlases { get; set; } = new();
+        public List<RoomTemplate> Templates { get; set; } = new();
+    }
+
+    private sealed class AtlasCell
+    {
+        public int X { get; set; }
+        public int Z { get; set; }
+        public int Cx { get; set; }
+        public int Cy { get; set; }
+        public int ShapeId { get; set; }
+        public int[] Rotations { get; set; } = [];
+        public int[] SpecificRooms { get; set; } = [];
+        public Dictionary<string, int[][]> Connections { get; set; } = new();
+        public string Code { get; set; } = string.Empty;
+        public int Rotation { get; set; }
+
+        public AtlasCell Copy() => new()
         {
-            Name = room.Name,
-            Variant = room.Variant,
-            Label = room.Label,
-            Category = room.Category,
-            Short = room.Short,
-            Glyph = room.Glyph,
-            Code = room.Code,
+            X = X, Z = Z, Cx = Cx, Cy = Cy, ShapeId = ShapeId,
+            Rotations = Rotations, SpecificRooms = SpecificRooms, Connections = Connections, Code = Code,
         };
+    }
 
-        public void ApplyTo(RoomData room)
-        {
-            room.Name = Name;
-            room.Variant = Variant;
-            room.Label = Label;
-            room.Category = Category;
-            room.Short = Short;
-            room.Glyph = Glyph;
-            room.Code = Code;
-        }
+    private sealed class RoomTemplate
+    {
+        public string Name { get; set; } = string.Empty;
+        public int ShapeId { get; set; }
+        public int RoomNameId { get; set; }
+        public int MinAmount { get; set; }
+        public int MaxAmount { get; set; }
+        public double ChanceMultiplier { get; set; }
+        public double AdjacentChanceMultiplier { get; set; }
+        public RoomDisplay Display { get; set; } = new();
+    }
+
+    private sealed class RoomDisplay
+    {
+        public string Name { get; set; } = string.Empty;
+        public string Group { get; set; } = string.Empty;
+        public string Label { get; set; } = string.Empty;
+        public string Category { get; set; } = string.Empty;
+        public string Short { get; set; } = string.Empty;
+        public string Glyph { get; set; } = string.Empty;
     }
 
     private sealed class LegacyRandom
     {
-        private const int MBIG = int.MaxValue;
-        private const int MSEED = 161803398;
-        private readonly int[] _seedArray = new int[56];
-        private int _inext;
-        private int _inextp;
+        private const int Mbig = int.MaxValue;
+        private readonly int[] _values = new int[56];
+        private int _next;
+        private int _nextPrime;
 
         public LegacyRandom(int seed)
         {
-            var subtraction = seed == int.MinValue ? int.MaxValue : Math.Abs(seed);
-            var mj = MSEED - subtraction;
-            _seedArray[55] = mj;
-            var mk = 1;
+            var subtraction = seed == int.MinValue ? Mbig : Math.Abs(seed);
+            var previous = 161803398 - subtraction;
+            _values[55] = previous;
+            var current = 1;
             for (var i = 1; i < 55; i++)
             {
-                var ii = 21 * i % 55;
-                _seedArray[ii] = mk;
-                mk = mj - mk;
-                if (mk < 0) mk += MBIG;
-                mj = _seedArray[ii];
+                var slot = 21 * i % 55;
+                _values[slot] = current;
+                current = previous - current;
+                if (current < 0) current += Mbig;
+                previous = _values[slot];
             }
-
-            for (var k = 1; k < 5; k++)
-            {
+            for (var pass = 0; pass < 4; pass++)
                 for (var i = 1; i < 56; i++)
                 {
-                    var n = _seedArray[i] - _seedArray[1 + (i + 30) % 55];
-                    _seedArray[i] = n < 0 ? n + MBIG : n;
+                    var value = _values[i] - _values[1 + (i + 30) % 55];
+                    _values[i] = value < 0 ? value + Mbig : value;
                 }
-            }
-
-            _inext = 0;
-            _inextp = 21;
+            _nextPrime = 21;
         }
 
-        private int InternalSample()
+        public double NextDouble()
         {
-            var locInext = _inext + 1;
-            if (locInext >= 56) locInext = 1;
-            var locInextp = _inextp + 1;
-            if (locInextp >= 56) locInextp = 1;
-            var retVal = _seedArray[locInext] - _seedArray[locInextp];
-            if (retVal == MBIG) retVal--;
-            if (retVal < 0) retVal += MBIG;
-            _seedArray[locInext] = retVal;
-            _inext = locInext;
-            _inextp = locInextp;
-            return retVal;
+            _next = _next + 1 >= 56 ? 1 : _next + 1;
+            _nextPrime = _nextPrime + 1 >= 56 ? 1 : _nextPrime + 1;
+            var value = _values[_next] - _values[_nextPrime];
+            if (value == Mbig) value--;
+            if (value < 0) value += Mbig;
+            _values[_next] = value;
+            return value * (1.0 / Mbig);
         }
 
-        public int Next(int maxValue)
-        {
-            if (maxValue < 0) throw new ArgumentOutOfRangeException(nameof(maxValue));
-            return (int)(InternalSample() * (1.0 / MBIG) * maxValue);
-        }
-
-        public int Next(int minValue, int maxValue)
-        {
-            if (minValue > maxValue) throw new ArgumentOutOfRangeException(nameof(minValue));
-            var range = (long)maxValue - minValue;
-            return (int)(InternalSample() * (1.0 / MBIG) * range) + minValue;
-        }
+        public int Next(int maxValue) => (int)(NextDouble() * maxValue);
     }
 }
