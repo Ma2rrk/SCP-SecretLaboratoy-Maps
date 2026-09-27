@@ -63,15 +63,22 @@ public static partial class SeedMonitor
 
         try
         {
+            const int tailBytes = 256 * 1024;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream);
-            var lines = new List<string>();
-            while (reader.ReadLine() is { } line)
+            if (stream.Length > tailBytes)
             {
-                lines.Add(line);
+                stream.Seek(-tailBytes, SeekOrigin.End);
             }
 
-            foreach (var line in lines.AsEnumerable().Reverse())
+            using var reader = new StreamReader(stream);
+            var lines = new Queue<string>(512);
+            while (reader.ReadLine() is { } line)
+            {
+                if (lines.Count == 512) lines.Dequeue();
+                lines.Enqueue(line);
+            }
+
+            foreach (var line in lines.Reverse())
             {
                 foreach (var regex in SeedRegexes)
                 {

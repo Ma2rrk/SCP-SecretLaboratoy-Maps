@@ -37,5 +37,3 @@ LczComputerRoom=电脑房
 LczGlassroom=玻璃房
 LczGreenhouse=温室
 LczToilets=厕所
-Outside
-Pocket

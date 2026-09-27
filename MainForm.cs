@@ -34,28 +34,46 @@ internal sealed class OverlaySettings
   public string SeedHotkey { get; set; } = "PageDown";
   public string ApiSource { get; set; } = "Primary";
 
+  private static string GetUserConfigPath()
+  {
+    var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+    return string.IsNullOrWhiteSpace(localAppData)
+      ? Path.Combine(AppContext.BaseDirectory, "overlay.json")
+      : Path.Combine(localAppData, "SLMapsOverlay", "overlay.json");
+  }
+
   public static OverlaySettings Load()
   {
-    var path = Path.Combine(AppContext.BaseDirectory, "overlay.json");
-    try
+    var paths = new[]
     {
-      if (File.Exists(path))
+      GetUserConfigPath(),
+      Path.Combine(AppContext.BaseDirectory, "overlay.json")
+    }.Distinct(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var path in paths)
+    {
+      try
       {
-        return JsonSerializer.Deserialize<OverlaySettings>(File.ReadAllText(path), new JsonSerializerOptions
+        if (File.Exists(path))
         {
-          PropertyNameCaseInsensitive = true
-        }) ?? new OverlaySettings();
+          return JsonSerializer.Deserialize<OverlaySettings>(File.ReadAllText(path), new JsonSerializerOptions
+          {
+            PropertyNameCaseInsensitive = true
+          }) ?? new OverlaySettings();
+        }
       }
-    }
-    catch (IOException)
-    {
-    }
-    catch (JsonException)
-    {
+      catch (IOException)
+      {
+      }
+      catch (JsonException)
+      {
+      }
     }
 
     return new OverlaySettings();
   }
+
+  public static string GetSavePath() => GetUserConfigPath();
 }
 
 internal sealed class TransparentPanel : Panel
@@ -149,7 +167,10 @@ public sealed class MainForm : Form
   private const int OffsetYSliderMin = -10000;
   private const int OffsetYSliderMax = 10000;
 
-    private readonly HttpClient _httpClient = new();
+    private readonly HttpClient _httpClient = new()
+    {
+      Timeout = TimeSpan.FromSeconds(15)
+    };
     private readonly System.Windows.Forms.Timer _timer = new();
     private readonly OverlaySettings _settings = OverlaySettings.Load();
     private readonly TransparentTrackBar _scaleInput = new();
@@ -178,6 +199,35 @@ public sealed class MainForm : Form
     private bool _isBackupMap;
     private IReadOnlyDictionary<string, string> _roomTranslations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private bool _isPolling;
+    private bool _pollTickRunning;
+    private Label? _cacheInfoLabel;
+    private int _mapLoadVersion;
+    private CancellationTokenSource? _mapLoadCancellation;
+    private MapLayout? _mapLayout;
+
+    private sealed class MapLayout
+    {
+      public MapApiResponse Source { get; init; } = null!;
+      public List<RoomData> Rooms { get; init; } = new();
+      public List<RoomData> EzRooms { get; init; } = new();
+      public List<RoomData> HczRooms { get; init; } = new();
+      public List<RoomData> LightRooms { get; init; } = new();
+      public List<RoomData> CoreRooms { get; init; } = new();
+      public List<RoomData> ConnectedCoreRooms { get; init; } = new();
+      public Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)> AlignedPositions { get; init; } = new();
+      public float ConnectedMinX { get; init; }
+      public float ConnectedMaxX { get; init; }
+      public float ConnectedMinZ { get; init; }
+      public float ConnectedMaxZ { get; init; }
+      public float CoreMinX { get; init; }
+      public float CoreMaxX { get; init; }
+      public float CoreMinZ { get; init; }
+      public float CoreMaxZ { get; init; }
+      public float LightMinX { get; init; }
+      public float LightMaxX { get; init; }
+      public float LightMinZ { get; init; }
+      public float LightMaxZ { get; init; }
+    }
     private const int HotkeyId = 1001;
     private const int WmHotkey = 0x0312;
     private const int WmMouseWheel = 0x020A;
@@ -226,6 +276,12 @@ public sealed class MainForm : Form
         _timer.Interval = 3000;
         _timer.Tick += async (_, _) =>
         {
+          if (_pollTickRunning)
+          {
+            return;
+          }
+
+          _pollTickRunning = true;
           try
           {
             if (IsGameFocused())
@@ -244,6 +300,14 @@ public sealed class MainForm : Form
           {
             // The game may be rotating or writing Player.log.
           }
+          catch (TaskCanceledException)
+          {
+            Log("地图请求超时");
+          }
+          finally
+          {
+            _pollTickRunning = false;
+          }
         };
 
         Shown += (_, _) => _timer.Start();
@@ -255,6 +319,7 @@ public sealed class MainForm : Form
         FormClosed += (_, _) =>
         {
           _timer.Stop();
+          Interlocked.Exchange(ref _mapLoadCancellation, null)?.Cancel();
           SaveControlSettings();
           if (IsHandleCreated) UnregisterHotKey(Handle, HotkeyId);
         };
@@ -320,20 +385,59 @@ public sealed class MainForm : Form
       }
     }
 
-    private async Task LoadSeedAsync(long seed)
+    private async Task LoadSeedAsync(long seed, bool forceRefresh = false)
     {
+      var loadVersion = Interlocked.Increment(ref _mapLoadVersion);
+      var requestCancellation = new CancellationTokenSource();
+      var previousCancellation = Interlocked.Exchange(ref _mapLoadCancellation, requestCancellation);
+      previousCancellation?.Cancel();
+      var cancellationToken = requestCancellation.Token;
       Log($"发现新 seed={seed}");
         try
         {
             var useBackup = string.Equals(_settings.ApiSource, "Backup", StringComparison.OrdinalIgnoreCase);
+            var useLocal = string.Equals(_settings.ApiSource, "Local", StringComparison.OrdinalIgnoreCase);
+            if (useLocal)
+            {
+              var localData = LocalMapGenerator.Generate(seed);
+              if (loadVersion != Volatile.Read(ref _mapLoadVersion)) return;
+              _map = localData;
+              _mapLayout = null;
+              _isBackupMap = false;
+              _roomTranslations = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+              _currentSeed = seed;
+              Log($"本地地图已生成，seed={seed}，区域数={localData.Zones.Count}");
+              Invalidate();
+              return;
+            }
             var url = useBackup ? $"https://slmaps.com/api/maps/{seed}" : $"https://scpslmaps.fxdyj.com/api.php?seed={seed}";
             string json = string.Empty;
+            var cachePath = GetMapCachePath(seed);
+            var loadedFromCache = false;
+            if (!forceRefresh && File.Exists(cachePath))
+            {
+              try
+              {
+                json = await File.ReadAllTextAsync(cachePath, cancellationToken);
+                loadedFromCache = IsUsableMapJson(json, seed);
+                if (loadedFromCache) Log($"已读取地图缓存，seed={seed}");
+                else Log($"地图缓存无效，将重新请求，seed={seed}");
+              }
+              catch (IOException)
+              {
+                loadedFromCache = false;
+              }
+            }
+
+            if (!loadedFromCache)
+            {
             for (var attempt = 1; attempt <= (useBackup ? 30 : 1); attempt++)
             {
-              json = await _httpClient.GetStringAsync(url);
+              json = await _httpClient.GetStringAsync(url, cancellationToken);
               if (!useBackup || !IsPendingMapJob(json)) break;
               Log($"备用 API 仍在生成地图，等待重试 ({attempt}/30)");
-              await Task.Delay(TimeSpan.FromSeconds(2));
+              await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            }
             }
             if (useBackup && IsPendingMapJob(json))
             {
@@ -342,25 +446,50 @@ public sealed class MainForm : Form
             }
         Log($"API 请求成功，响应长度={json.Length}");
           Log("JSON 原文开始");
-          Log(json);
+          const int maxLoggedJsonLength = 4096;
+          Log(json.Length <= maxLoggedJsonLength
+            ? $"JSON response: {json}"
+            : $"JSON response truncated to {maxLoggedJsonLength} characters (full length {json.Length}): {json[..maxLoggedJsonLength]}");
           Log("JSON 原文结束");
-            var data = MapResponseAdapter.Parse(json, seed, useBackup);
+            var responseUsesBackupFormat = useBackup || IsBackupMapResponse(json);
+            var data = MapResponseAdapter.Parse(json, seed, responseUsesBackupFormat);
 
-            if (data is null || data.Zones.Count == 0)
+            if (data is null || data.Zones is null || !data.Zones.Values.Any(rooms => rooms is { Count: > 0 }))
             {
               Log("JSON 解析失败：结果为空");
                 return;
             }
 
             Log($"JSON 解析成功：seed={data.Seed}，区域数={data.Zones.Count}");
+            if (loadVersion != Volatile.Read(ref _mapLoadVersion)) return;
+            if (!loadedFromCache)
+            {
+              try
+              {
+                Directory.CreateDirectory(GetMapCacheDirectory());
+                await WriteCacheAtomicallyAsync(cachePath, json, cancellationToken);
+                UpdateCacheInfo();
+                Log($"地图 JSON 已保存到缓存: seed={seed}");
+              }
+              catch (IOException exception)
+              {
+                Log($"地图缓存写入失败: {exception.Message}");
+              }
+            }
+            if (loadVersion != Volatile.Read(ref _mapLoadVersion)) return;
             _map = data;
-            _isBackupMap = useBackup;
-            _roomTranslations = useBackup
+            _mapLayout = null;
+            _isBackupMap = responseUsesBackupFormat;
+            _roomTranslations = responseUsesBackupFormat
               ? LoadRoomTranslations()
               : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             _currentSeed = seed;
             Log($"地图解析成功，区域数={data.Zones.Count}，开始重绘");
             Invalidate();
+        }
+          catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+          return;
         }
           catch (JsonException exception)
         {
@@ -370,6 +499,50 @@ public sealed class MainForm : Form
         {
             Log($"地图请求或解析失败: {exception.GetType().Name}: {exception.Message}");
         }
+        finally
+        {
+          if (ReferenceEquals(_mapLoadCancellation, requestCancellation))
+          {
+            Interlocked.CompareExchange(ref _mapLoadCancellation, null, requestCancellation);
+          }
+          requestCancellation.Dispose();
+        }
+    }
+
+    private static bool IsUsableMapJson(string json, long seed)
+    {
+      if (string.IsNullOrWhiteSpace(json) || IsPendingMapJob(json)) return false;
+
+      try
+      {
+        var data = MapResponseAdapter.Parse(json, seed, IsBackupMapResponse(json));
+        return data.Zones is not null && data.Zones.Values.Any(rooms => rooms is { Count: > 0 });
+      }
+      catch (Exception exception) when (exception is JsonException or InvalidOperationException or NullReferenceException)
+      {
+        return false;
+      }
+    }
+
+    private static async Task WriteCacheAtomicallyAsync(string cachePath, string json, CancellationToken cancellationToken)
+    {
+      var directory = Path.GetDirectoryName(cachePath) ?? AppContext.BaseDirectory;
+      var temporaryPath = Path.Combine(directory, $".{Path.GetFileName(cachePath)}.{Guid.NewGuid():N}.tmp");
+      try
+      {
+        await File.WriteAllTextAsync(temporaryPath, json, cancellationToken);
+        File.Move(temporaryPath, cachePath, overwrite: true);
+      }
+      finally
+      {
+        try
+        {
+          if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+        catch (IOException)
+        {
+        }
+      }
     }
 
     private static bool IsPendingMapJob(string json)
@@ -388,6 +561,81 @@ public sealed class MainForm : Form
         return false;
       }
     }
+
+    private static bool IsBackupMapResponse(string json)
+    {
+      try
+      {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("rooms", out _);
+      }
+      catch (JsonException)
+      {
+        return false;
+      }
+    }
+
+    private static string GetMapCacheDirectory()
+    {
+      var configDirectory = Path.GetDirectoryName(OverlaySettings.GetSavePath()) ?? AppContext.BaseDirectory;
+      return Path.Combine(configDirectory, "map-cache");
+    }
+
+    private static string GetMapCachePath(long seed) => Path.Combine(GetMapCacheDirectory(), $"{seed}.json");
+
+    private void ClearDisplayedMap()
+    {
+      _map = null;
+      _mapLayout = null;
+      _roomHitBoxes.Clear();
+      _coreMapBounds = RectangleF.Empty;
+      _lczMapBounds = RectangleF.Empty;
+      _hoveredRoom = null;
+      Invalidate();
+    }
+
+
+    private void UpdateCacheInfo()
+    {
+      if (_cacheInfoLabel is null) return;
+      try
+      {
+        var files = Directory.Exists(GetMapCacheDirectory())
+          ? Directory.EnumerateFiles(GetMapCacheDirectory(), "*.json")
+          : Enumerable.Empty<string>();
+        var bytes = files.Sum(path => new FileInfo(path).Length);
+        _cacheInfoLabel.Text = $"已缓存 {FormatBytes(bytes)}";
+      }
+      catch (IOException)
+      {
+        _cacheInfoLabel.Text = "缓存大小不可用";
+      }
+    }
+
+    private void ClearMapCache()
+    {
+      try
+      {
+        if (Directory.Exists(GetMapCacheDirectory()))
+        {
+          foreach (var file in Directory.EnumerateFiles(GetMapCacheDirectory(), "*.json")) File.Delete(file);
+        }
+        UpdateCacheInfo();
+        Log("地图缓存已删除");
+      }
+      catch (IOException exception)
+      {
+        Log($"地图缓存删除失败: {exception.Message}");
+      }
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+      >= 1024 * 1024 => $"{bytes / 1024d / 1024d:0.##} MB",
+      >= 1024 => $"{bytes / 1024d:0.##} KB",
+      _ => $"{bytes} B"
+    };
 
       private Panel BuildControlPanel()
       {
@@ -412,7 +660,7 @@ public sealed class MainForm : Form
 
         var subtitle = new Label
         {
-          Text = "Fine positioning and scale calibration",
+          Text = "地图定位与缩放",
           Location = new Point(19, 43),
           AutoSize = true,
           BackColor = Color.Transparent,
@@ -428,8 +676,8 @@ public sealed class MainForm : Form
         _settings.LczOffsetX = Math.Clamp(_settings.LczOffsetX, -2000f, 2000f);
         _settings.LczOffsetY = Math.Clamp(_settings.LczOffsetY, -1000f, 1000f);
 
-        AddSectionLabel(panel, "CORE / EZ + HCZ", 20, 68);
-        AddSectionLabel(panel, "LCZ / LIGHT CONTAINMENT", 20, 218);
+        AddSectionLabel(panel, "核心区 / EZ + HCZ", 20, 68);
+        AddSectionLabel(panel, "LCZ / 轻收容区", 20, 218);
 
         AddSliderControl(panel, "核心缩放", _scaleInput, 0, 150, (int)Math.Clamp(_settings.CoreScale * 100, 0, 150), 42);
         AddSliderControl(panel, "核心 X", _offsetXInput, -2500, 2000, (int)Math.Clamp(_settings.CoreOffsetX, -2500, 2000), 76);
@@ -440,7 +688,43 @@ public sealed class MainForm : Form
 
         AddKeyControl(panel, "面板快捷键", _overlayHotkeyInput, _settings.Hotkey, 398, "F8");
         AddKeyControl(panel, "获取种子键", _seedHotkeyInput, _settings.SeedHotkey, 434, "PageDown");
-        AddApiControl(panel, _apiInput, _settings.ApiSource, 470);
+        AddApiControlFixed(panel, _apiInput, _settings.ApiSource, 470);
+        _apiInput.SelectedIndexChanged += async (_, _) =>
+        {
+          if (_currentSeed <= 0) return;
+
+          var apiSource = _apiInput.SelectedIndex == 1 ? "Backup"
+            : _apiInput.SelectedIndex == 2 ? "Local" : "Primary";
+          if (string.Equals(_settings.ApiSource, apiSource, StringComparison.OrdinalIgnoreCase)) return;
+
+          _settings.ApiSource = apiSource;
+          ClearDisplayedMap();
+          await LoadSeedAsync(_currentSeed, forceRefresh: true);
+        };
+
+        _cacheInfoLabel = new Label
+        {
+          Location = new Point(20, 570),
+          Size = new Size(170, 24),
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(190, 220, 220, 220),
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+        };
+        panel.Controls.Add(_cacheInfoLabel);
+        var clearCacheButton = new Button
+        {
+          Text = "删除缓存 JSON",
+          Location = new Point(210, 570),
+          Size = new Size(145, 30),
+          FlatStyle = FlatStyle.Flat,
+          BackColor = Color.FromArgb(70, 74, 82),
+          ForeColor = Color.White,
+          Cursor = Cursors.Hand,
+        };
+        clearCacheButton.FlatAppearance.BorderSize = 0;
+        clearCacheButton.Click += (_, _) => ClearMapCache();
+        panel.Controls.Add(clearCacheButton);
+        UpdateCacheInfo();
 
         var saveButton = new Button
         {
@@ -454,19 +738,19 @@ public sealed class MainForm : Form
           Font = new Font(FontFamily.GenericSansSerif, 8.5f, FontStyle.Bold),
         };
         saveButton.FlatAppearance.BorderSize = 0;
-        saveButton.Click += (_, _) => SaveControlSettings();
+        saveButton.Click += (_, _) => SaveControlSettings(closePanel: true, reloadMap: true);
         panel.Controls.Add(saveButton);
 
         var hint = new Label
         {
-          Text = "Scale 0.1–3.0x  |  Offset ±5000px",
+          Text = "缩放 0.1-1.5x | 偏移 X±2000 / Y±1000",
           Location = new Point(166, 539),
           AutoSize = true,
           BackColor = Color.Transparent,
           ForeColor = Color.FromArgb(190, 220, 220, 220),
           Font = new Font(FontFamily.GenericSansSerif, 7.5f),
         };
-        hint.Text = "Scale 0.1-1.5x  |  X +/-2000  |  Y +/-1000";
+        hint.Text = "缩放 0.1-1.5x | X +/-2000 | Y +/-1000";
         panel.Controls.Add(hint);
 
         _scaleInput.ValueChanged += (_, _) => ApplyControlSettings();
@@ -559,6 +843,8 @@ public sealed class MainForm : Form
         parent.Controls.Add(input);
       }
 
+      /* Legacy API control removed; AddApiControlFixed is the single implementation. */
+      /*
       private static void AddApiControl(Control parent, ComboBox input, string selectedApi, int y)
       {
         var label = new Label
@@ -576,9 +862,45 @@ public sealed class MainForm : Form
         input.BackColor = Color.FromArgb(38, 42, 49);
         input.ForeColor = Color.White;
         input.FlatStyle = FlatStyle.Flat;
-        input.Items.Clear();
+         input.Items.Clear();
+         input.Items.AddRange(new object[] { "Primary API", "Backup API (slmaps.com)", "Local generation" });
+         input.SelectedIndex = string.Equals(selectedApi, "Backup", StringComparison.OrdinalIgnoreCase) ? 1
+           : string.Equals(selectedApi, "Local", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+         parent.Controls.Add(label);
+         parent.Controls.Add(input);
+         return;
         input.Items.AddRange(new object[] { "主 API", "备用 API (slmaps.com)" });
-        input.SelectedIndex = string.Equals(selectedApi, "Backup", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+         input.Items.Clear();
+         input.Items.AddRange(new object[] { "Primary API", "Backup API (slmaps.com)", "Local generation" });
+         input.SelectedIndex = string.Equals(selectedApi, "Backup", StringComparison.OrdinalIgnoreCase) ? 1
+           : string.Equals(selectedApi, "Local", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
+         parent.Controls.Add(label);
+         parent.Controls.Add(input);
+      }
+      */
+
+      private static void AddApiControlFixed(Control parent, ComboBox input, string selectedApi, int y)
+      {
+        var label = new Label
+        {
+          Text = "地图来源",
+          Location = new Point(20, y + 5),
+          AutoSize = true,
+          BackColor = Color.Transparent,
+          ForeColor = Color.FromArgb(220, 226, 230, 236),
+          Font = new Font(FontFamily.GenericSansSerif, 8.5f),
+        };
+
+        input.DropDownStyle = ComboBoxStyle.DropDownList;
+        input.Location = new Point(146, y);
+        input.Size = new Size(190, 26);
+        input.BackColor = Color.FromArgb(38, 42, 49);
+        input.ForeColor = Color.White;
+        input.FlatStyle = FlatStyle.Flat;
+        input.Items.Clear();
+        input.Items.AddRange(new object[] { "Primary API", "Backup API (slmaps.com)", "Local generation" });
+        input.SelectedIndex = string.Equals(selectedApi, "Backup", StringComparison.OrdinalIgnoreCase) ? 1
+          : string.Equals(selectedApi, "Local", StringComparison.OrdinalIgnoreCase) ? 2 : 0;
         parent.Controls.Add(label);
         parent.Controls.Add(input);
       }
@@ -613,30 +935,36 @@ public sealed class MainForm : Form
         Invalidate();
       }
 
-      private void SaveControlSettings()
+      private void SaveControlSettings(bool closePanel = false, bool reloadMap = false)
       {
         ApplyControlSettings();
         _settings.Hotkey = _overlayHotkeyInput.SelectedItem?.ToString() ?? "F8";
         _settings.SeedHotkey = _seedHotkeyInput.SelectedItem?.ToString() ?? "PageDown";
-        _settings.ApiSource = _apiInput.SelectedIndex == 1 ? "Backup" : "Primary";
-        if (_controlPanel is not null)
-        {
-          _controlPanel.Visible = false;
-        }
+        _settings.ApiSource = _apiInput.SelectedIndex == 1 ? "Backup"
+          : _apiInput.SelectedIndex == 2 ? "Local" : "Primary";
         try
         {
-          var path = Path.Combine(AppContext.BaseDirectory, "overlay.json");
+          var path = OverlaySettings.GetSavePath();
+          var directory = Path.GetDirectoryName(path);
+          if (!string.IsNullOrWhiteSpace(directory))
+          {
+            Directory.CreateDirectory(directory);
+          }
           File.WriteAllText(path, JsonSerializer.Serialize(_settings, new JsonSerializerOptions { WriteIndented = true }));
           if (IsHandleCreated && !IsDisposed)
           {
             UnregisterHotKey(Handle, HotkeyId);
             RegisterOverlayHotkey();
           }
-          if (_controlPanel is not null)
+          Log("配置已保存");
+          if (closePanel && _controlPanel is not null)
           {
             _controlPanel.Visible = false;
           }
-          Log("配置已保存");
+          if (reloadMap && _currentSeed > 0)
+          {
+            _ = LoadSeedAsync(_currentSeed, forceRefresh: true);
+          }
         }
         catch (IOException exception)
         {
@@ -740,6 +1068,14 @@ public sealed class MainForm : Form
 
       private int GetMapRegionAt(Point point)
       {
+        foreach (var entry in _roomHitBoxes)
+        {
+          if (entry.Value.Contains(point))
+          {
+            return IsLightContainmentRoom(entry.Key) ? 1 : 0;
+          }
+        }
+
         if (_lczMapBounds.Contains(point)) return 1;
         if (_coreMapBounds.Contains(point)) return 0;
         return -1;
@@ -755,7 +1091,9 @@ public sealed class MainForm : Form
         _lczOffsetYInput.Value = (int)Math.Clamp(_settings.LczOffsetY * 10, OffsetYSliderMin, OffsetYSliderMax);
       }
 
-      private static void Log(string message)
+    internal static void LogMessage(string message) => Log(message);
+
+    private static void Log(string message)
       {
         try
         {
@@ -831,67 +1169,37 @@ public sealed class MainForm : Form
           return;
         }
 
-        var rooms = _map.Zones
-          .SelectMany(zone => zone.Value.Select(room =>
-          {
-            room.Zone = ResolveZone(room, zone.Key);
-            return room;
-          }))
-          .ToList();
+        if (_mapLayout is null || !ReferenceEquals(_mapLayout.Source, _map))
+        {
+          _mapLayout = BuildMapLayout(_map);
+        }
+
+        var layout = _mapLayout;
+        var rooms = layout.Rooms;
         if (rooms.Count == 0)
         {
           return;
         }
 
-        var ezRooms = rooms.Where(IsEntranceRoom).ToList();
-        var hczRooms = rooms.Where(IsHeavyContainmentRoom).ToList();
-        var lightRooms = rooms.Where(IsLightContainmentRoom).ToList();
-        var coreRooms = rooms.Where(room => !IsLightContainmentRoom(room)).ToList();
-        var connectedCoreRooms = coreRooms.Where(room => IsEntranceRoom(room) || IsHeavyContainmentRoom(room)).ToList();
-        var positions = new Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)>();
-        foreach (var room in coreRooms)
-        {
-          positions[room] = (-room.X, -room.Z, room.Conn.Select(connection => new RoomConnection
-          {
-            Dx = -connection.Dx,
-            Dz = -connection.Dz,
-            TargetX = connection.TargetX ?? room.X + connection.Dx * 15f,
-            TargetZ = connection.TargetZ ?? room.Z + connection.Dz * 15f,
-          }).ToList());
-        }
-        foreach (var room in lightRooms)
-        {
-          positions[room] = (room.X, room.Z, room.Conn.Select(connection => new RoomConnection
-          {
-            Dx = connection.Dx,
-            Dz = connection.Dz,
-            TargetX = connection.TargetX ?? room.X + connection.Dx * 15f,
-            TargetZ = connection.TargetZ ?? room.Z + connection.Dz * 15f,
-          }).ToList());
-        }
-
-        var alignedPositions = AlignConnectedRooms(rooms, positions);
+        var ezRooms = layout.EzRooms;
+        var hczRooms = layout.HczRooms;
+        var lightRooms = layout.LightRooms;
+        var coreRooms = layout.CoreRooms;
+        var connectedCoreRooms = layout.ConnectedCoreRooms;
+        var alignedPositions = layout.AlignedPositions;
         var padding = 60f;
-        var coreMinX = coreRooms.Count == 0 ? 0f : coreRooms.Min(room => alignedPositions[room].X);
-        var coreMaxX = coreRooms.Count == 0 ? 0f : coreRooms.Max(room => alignedPositions[room].X);
-        var coreMinZ = coreRooms.Count == 0 ? 0f : coreRooms.Min(room => alignedPositions[room].Z);
-        var coreMaxZ = coreRooms.Count == 0 ? 0f : coreRooms.Max(room => alignedPositions[room].Z);
-        var ezMinX = ezRooms.Count == 0 ? 0f : ezRooms.Min(room => alignedPositions[room].X);
-        var ezMaxX = ezRooms.Count == 0 ? 0f : ezRooms.Max(room => alignedPositions[room].X);
-        var ezMinZ = ezRooms.Count == 0 ? 0f : ezRooms.Min(room => alignedPositions[room].Z);
-        var ezMaxZ = ezRooms.Count == 0 ? 0f : ezRooms.Max(room => alignedPositions[room].Z);
-        var hczMinX = hczRooms.Count == 0 ? 0f : hczRooms.Min(room => alignedPositions[room].X);
-        var hczMaxX = hczRooms.Count == 0 ? 0f : hczRooms.Max(room => alignedPositions[room].X);
-        var hczMinZ = hczRooms.Count == 0 ? 0f : hczRooms.Min(room => alignedPositions[room].Z);
-        var hczMaxZ = hczRooms.Count == 0 ? 0f : hczRooms.Max(room => alignedPositions[room].Z);
-        var connectedMinX = connectedCoreRooms.Count == 0 ? 0f : connectedCoreRooms.Min(room => alignedPositions[room].X);
-        var connectedMaxX = connectedCoreRooms.Count == 0 ? 0f : connectedCoreRooms.Max(room => alignedPositions[room].X);
-        var connectedMinZ = connectedCoreRooms.Count == 0 ? 0f : connectedCoreRooms.Min(room => alignedPositions[room].Z);
-        var connectedMaxZ = connectedCoreRooms.Count == 0 ? 0f : connectedCoreRooms.Max(room => alignedPositions[room].Z);
-        var lightMinX = lightRooms.Count == 0 ? 0f : lightRooms.Min(room => alignedPositions[room].X);
-        var lightMaxX = lightRooms.Count == 0 ? 0f : lightRooms.Max(room => alignedPositions[room].X);
-        var lightMinZ = lightRooms.Count == 0 ? 0f : lightRooms.Min(room => alignedPositions[room].Z);
-        var lightMaxZ = lightRooms.Count == 0 ? 0f : lightRooms.Max(room => alignedPositions[room].Z);
+        var coreMinX = layout.CoreMinX;
+        var coreMaxX = layout.CoreMaxX;
+        var coreMinZ = layout.CoreMinZ;
+        var coreMaxZ = layout.CoreMaxZ;
+        var connectedMinX = layout.ConnectedMinX;
+        var connectedMaxX = layout.ConnectedMaxX;
+        var connectedMinZ = layout.ConnectedMinZ;
+        var connectedMaxZ = layout.ConnectedMaxZ;
+        var lightMinX = layout.LightMinX;
+        var lightMaxX = layout.LightMaxX;
+        var lightMinZ = layout.LightMinZ;
+        var lightMaxZ = layout.LightMaxZ;
         var coreSpan = Math.Max(1f, Math.Max(coreMaxX - coreMinX, coreMaxZ - coreMinZ));
         var lightSpan = Math.Max(1f, Math.Max(lightMaxX - lightMinX, lightMaxZ - lightMinZ));
         var coreScale = Math.Clamp(Math.Min((ClientSize.Width / 2f - padding * 2) / coreSpan, (ClientSize.Height - padding * 2) / coreSpan) * _settings.CoreScale, 1f, 100f);
@@ -921,6 +1229,16 @@ public sealed class MainForm : Form
         using var borderPen = new Pen(Color.FromArgb(210, 42, 42, 42), 1.2f);
         using var corridorBrush = new SolidBrush(Color.FromArgb(235, 25, 26, 29));
         using var labelBrush = new SolidBrush(Color.White);
+        using var coreConnectorPen = CreateConnectorPen(corridorBrush.Color, 0.44f * 15f * coreScale);
+        using var lightConnectorPen = CreateConnectorPen(corridorBrush.Color, 0.44f * 15f * lczScale);
+        using var labelFormat = new StringFormat
+        {
+          Alignment = StringAlignment.Center,
+          LineAlignment = StringAlignment.Center,
+          Trimming = StringTrimming.EllipsisCharacter,
+        };
+        using var coreLabelFont = new Font(FontFamily.GenericSansSerif, Math.Clamp(coreScale * 1.7f, 7f, 14f), FontStyle.Bold);
+        using var lightLabelFont = new Font(FontFamily.GenericSansSerif, Math.Clamp(lczScale * 1.7f, 7f, 14f), FontStyle.Bold);
         var roomOrder = rooms
           .Select((room, index) => (room, index))
           .ToDictionary(item => item.room, item => item.index);
@@ -929,8 +1247,7 @@ public sealed class MainForm : Form
         foreach (var room in rooms)
         {
           var point = ToPoint(room);
-          var activeScale = IsLightContainmentRoom(room) ? lczScale : coreScale;
-          var connectorWidth = 0.44f * 15f * activeScale;
+          var connectorPen = IsLightContainmentRoom(room) ? lightConnectorPen : coreConnectorPen;
           var connections = alignedPositions[room].Connections;
           foreach (var connection in connections)
           {
@@ -941,12 +1258,6 @@ public sealed class MainForm : Form
             }
 
             var targetPoint = ToPoint(target);
-            using var connectorPen = new Pen(corridorBrush.Color, connectorWidth)
-            {
-              StartCap = LineCap.Round,
-              EndCap = LineCap.Round,
-              LineJoin = LineJoin.Round,
-            };
             e.Graphics.DrawLine(connectorPen, point, targetPoint);
           }
         }
@@ -957,7 +1268,7 @@ public sealed class MainForm : Form
         foreach (var room in rooms)
         {
           var point = ToPoint(room);
-          var activeScale = string.Equals(room.Zone, "LightContainment", StringComparison.OrdinalIgnoreCase) ? lczScale : coreScale;
+          var activeScale = IsLightContainmentRoom(room) ? lczScale : coreScale;
           var cell = 15f * activeScale;
 
           var widthRoom = 0.88f * cell;
@@ -979,14 +1290,81 @@ public sealed class MainForm : Form
           var label = GetRoomDisplayName(room);
           if (!string.IsNullOrWhiteSpace(label) && !label.Contains("Unnamed", StringComparison.OrdinalIgnoreCase))
           {
-            using var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
-            var labelScale = string.Equals(room.Zone, "LightContainment", StringComparison.OrdinalIgnoreCase) ? lczScale : coreScale;
-            using var roomLabelFont = new Font(FontFamily.GenericSansSerif, Math.Clamp(labelScale * 1.7f, 7f, 14f), FontStyle.Bold);
+            var roomLabelFont = IsLightContainmentRoom(room) ? lightLabelFont : coreLabelFont;
             var labelRectangle = new RectangleF(point.X - widthRoom / 2, point.Y - heightRoom / 2, widthRoom, heightRoom);
-            e.Graphics.DrawString(label, roomLabelFont, labelBrush, labelRectangle, format);
+            e.Graphics.DrawString(label, roomLabelFont, labelBrush, labelRectangle, labelFormat);
           }
         }
 
+      }
+
+      private static MapLayout BuildMapLayout(MapApiResponse map)
+      {
+        var rooms = map.Zones
+          .SelectMany(zone => zone.Value.Select(room =>
+          {
+            room.Zone = ResolveZone(room, zone.Key);
+            return room;
+          }))
+          .ToList();
+        var ezRooms = rooms.Where(IsEntranceRoom).ToList();
+        var hczRooms = rooms.Where(IsHeavyContainmentRoom).ToList();
+        var lightRooms = rooms.Where(IsLightContainmentRoom).ToList();
+        var coreRooms = rooms.Where(room => !IsLightContainmentRoom(room)).ToList();
+        var connectedCoreRooms = coreRooms.Where(room => IsEntranceRoom(room) || IsHeavyContainmentRoom(room)).ToList();
+        var positions = new Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)>();
+
+        foreach (var room in coreRooms)
+        {
+          positions[room] = (-room.X, -room.Z, room.Conn.Select(connection => new RoomConnection
+          {
+            Dx = -connection.Dx,
+            Dz = -connection.Dz,
+            TargetX = connection.TargetX ?? room.X + connection.Dx * 15f,
+            TargetZ = connection.TargetZ ?? room.Z + connection.Dz * 15f,
+          }).ToList());
+        }
+
+        foreach (var room in lightRooms)
+        {
+          positions[room] = (room.X, room.Z, room.Conn.Select(connection => new RoomConnection
+          {
+            Dx = connection.Dx,
+            Dz = connection.Dz,
+            TargetX = connection.TargetX ?? room.X + connection.Dx * 15f,
+            TargetZ = connection.TargetZ ?? room.Z + connection.Dz * 15f,
+          }).ToList());
+        }
+
+        var aligned = AlignConnectedRooms(rooms, positions);
+        static float MinOrZero(IReadOnlyList<RoomData> source, Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)> values, bool x)
+          => source.Count == 0 ? 0f : (x ? source.Min(room => values[room].X) : source.Min(room => values[room].Z));
+        static float MaxOrZero(IReadOnlyList<RoomData> source, Dictionary<RoomData, (float X, float Z, List<RoomConnection> Connections)> values, bool x)
+          => source.Count == 0 ? 0f : (x ? source.Max(room => values[room].X) : source.Max(room => values[room].Z));
+
+        return new MapLayout
+        {
+          Source = map,
+          Rooms = rooms,
+          EzRooms = ezRooms,
+          HczRooms = hczRooms,
+          LightRooms = lightRooms,
+          CoreRooms = coreRooms,
+          ConnectedCoreRooms = connectedCoreRooms,
+          AlignedPositions = aligned,
+          CoreMinX = MinOrZero(coreRooms, aligned, true),
+          CoreMaxX = MaxOrZero(coreRooms, aligned, true),
+          CoreMinZ = MinOrZero(coreRooms, aligned, false),
+          CoreMaxZ = MaxOrZero(coreRooms, aligned, false),
+          ConnectedMinX = MinOrZero(connectedCoreRooms, aligned, true),
+          ConnectedMaxX = MaxOrZero(connectedCoreRooms, aligned, true),
+          ConnectedMinZ = MinOrZero(connectedCoreRooms, aligned, false),
+          ConnectedMaxZ = MaxOrZero(connectedCoreRooms, aligned, false),
+          LightMinX = MinOrZero(lightRooms, aligned, true),
+          LightMaxX = MaxOrZero(lightRooms, aligned, true),
+          LightMinZ = MinOrZero(lightRooms, aligned, false),
+          LightMaxZ = MaxOrZero(lightRooms, aligned, false),
+        };
       }
 
       private static RoomData? FindConnectedRoom(RoomData room, RoomConnection connection, IReadOnlyCollection<RoomData> rooms)
@@ -1001,9 +1379,16 @@ public sealed class MainForm : Form
           && Math.Abs(candidate.Z - targetZ) < 0.01f);
       }
 
+      private static Pen CreateConnectorPen(Color color, float width) => new(color, width)
+      {
+        StartCap = LineCap.Round,
+        EndCap = LineCap.Round,
+        LineJoin = LineJoin.Round,
+      };
+
       private static void DrawRoomBody(Graphics graphics, RoomData room, PointF center, float width, float height, Brush fill, Pen border)
       {
-        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        using var path = new System.Drawing.Drawing2D.GraphicsPath();
         var left = center.X - width / 2f;
         var top = center.Y - height / 2f;
         switch (room.Glyph?.ToLowerInvariant())
@@ -1036,7 +1421,6 @@ public sealed class MainForm : Form
             graphics.DrawRectangle(border, left, top, width, height);
             break;
         }
-        path.Dispose();
       }
 
       private static void AddPolygon(System.Drawing.Drawing2D.GraphicsPath path, PointF center, float width, float height, int sides)
@@ -1191,14 +1575,32 @@ public sealed class MainForm : Form
       private string GetRoomDisplayName(RoomData room)
       {
         var candidate = room.Short;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return TranslateRoomName(candidate);
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && (_isBackupMap || !IsZoneCodeLabel(candidate)))
+        {
+          var translated = TranslateRoomName(candidate);
+          if (!string.IsNullOrWhiteSpace(translated)) return translated;
+        }
         candidate = room.Code;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return TranslateRoomName(candidate);
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && (_isBackupMap || !IsZoneCodeLabel(candidate)))
+        {
+          var translated = TranslateRoomName(candidate);
+          if (!string.IsNullOrWhiteSpace(translated)) return translated;
+        }
         candidate = room.Label;
-        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && !IsZoneCodeLabel(candidate)) return TranslateRoomName(candidate);
+        if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate) && !IsHiddenRoomName(candidate) && (_isBackupMap || !IsZoneCodeLabel(candidate)))
+        {
+          var translated = TranslateRoomName(candidate);
+          if (!string.IsNullOrWhiteSpace(translated)) return translated;
+        }
         candidate = room.Name;
         if (!string.IsNullOrWhiteSpace(candidate) && !IsUnnamedRoomName(candidate))
         {
+          if (_isBackupMap)
+          {
+            var translated = TranslateRoomName(candidate);
+            if (!string.IsNullOrWhiteSpace(translated)) return translated;
+          }
+
           foreach (var prefix in new[]
           {
             "EZ_", "EZ ", "EZ-", "EZ:", "EZ/",
@@ -1228,20 +1630,8 @@ public sealed class MainForm : Form
         if (!string.IsNullOrWhiteSpace(variant))
         {
           variant = variant.Replace("(Clone)", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
-          foreach (var prefix in new[] { "EZ_", "HCZ_", "LCZ_" })
-          {
-            if (variant.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-            {
-              variant = variant[prefix.Length..].Trim();
-              break;
-            }
-          }
-
-          variant = variant.Replace('_', ' ');
           if (!string.IsNullOrWhiteSpace(variant) && !IsUnnamedRoomName(variant))
-          {
-            return variant;
-          }
+            return TranslateRoomName(variant);
         }
 
         return string.Empty;
@@ -1251,7 +1641,46 @@ public sealed class MainForm : Form
       {
         if (!_isBackupMap || string.IsNullOrWhiteSpace(name)) return name;
 
-        return _roomTranslations.TryGetValue(name.Trim(), out var translated) ? translated : name;
+        var trimmed = name.Trim().Replace("(Clone)", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+        foreach (var candidate in BuildRoomNameCandidates(trimmed))
+        {
+          if (_roomTranslations.TryGetValue(candidate, out var translated)) return translated;
+        }
+
+        // 备用 API 只显示 room.txt 中存在的中文名称，避免回退显示英文标识。
+        return string.Empty;
+      }
+
+      private static IEnumerable<string> BuildRoomNameCandidates(string value)
+      {
+        var trimmed = value.Trim();
+        yield return trimmed;
+
+        var prefix = string.Empty;
+        var remainder = trimmed;
+        foreach (var zonePrefix in new[] { "EZ", "HCZ", "LCZ" })
+        {
+          if (trimmed.StartsWith(zonePrefix + "_", StringComparison.OrdinalIgnoreCase)
+              || trimmed.StartsWith(zonePrefix + " ", StringComparison.OrdinalIgnoreCase)
+              || trimmed.StartsWith(zonePrefix + "-", StringComparison.OrdinalIgnoreCase))
+          {
+            prefix = zonePrefix;
+            remainder = trimmed[zonePrefix.Length..].TrimStart('_', ' ', '-');
+            break;
+          }
+        }
+
+        if (prefix.Length > 0)
+        {
+          yield return prefix + remainder;
+          yield return char.ToUpperInvariant(prefix[0]) + prefix[1..].ToLowerInvariant()
+            + remainder.Replace("_", string.Empty, StringComparison.Ordinal);
+          yield return char.ToUpperInvariant(prefix[0]) + prefix[1..].ToLowerInvariant()
+            + remainder.Replace('_', ' ');
+        }
+
+        var compact = trimmed.Replace("_", string.Empty, StringComparison.Ordinal);
+        if (!string.Equals(compact, trimmed, StringComparison.OrdinalIgnoreCase)) yield return compact;
       }
 
       private static IReadOnlyDictionary<string, string> LoadRoomTranslations()

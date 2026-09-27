@@ -1,0 +1,21 @@
+# .NET build outputs
+bin/
+obj/
+buildcheck*/
+
+# Runtime state and logs
+overlay.log
+*.log
+map-cache/
+
+# Temporary API comparison files
+compare-*.json
+api-*.json
+backup-api-*.json
+backup_api.txt
+GameAssembly.dll
+
+# Local IDE files
+.idea/
+*.user
+*.suo

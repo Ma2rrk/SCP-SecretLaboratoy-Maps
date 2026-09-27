@@ -94,10 +94,13 @@ internal static class MapResponseAdapter
     {
         if (!backup)
         {
-            return JsonSerializer.Deserialize<MapApiResponse>(json, new JsonSerializerOptions
+            var primaryResponse = JsonSerializer.Deserialize<MapApiResponse>(json, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true,
-            }) ?? new MapApiResponse { Seed = requestedSeed };
+            });
+            if (primaryResponse is not null && primaryResponse.Zones.Count > 0) return primaryResponse;
+
+            // 共享缓存可能来自备用 API，继续使用兼容解析器处理 rooms/zones 结构。
         }
 
         using var document = JsonDocument.Parse(json);

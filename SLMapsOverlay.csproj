@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <None Update="overlay.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="generated-map-224593721.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="room.txt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
