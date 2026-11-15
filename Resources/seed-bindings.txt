@@ -1,0 +1,12 @@
+# Key mapping text extracted from scpsl-seed-detector.bat; parsed as data only.
+$KEYMAP = @{
+    F1=@{vk=0x70;kc=282}; F2=@{vk=0x71;kc=283}; F3=@{vk=0x72;kc=284}; F4=@{vk=0x73;kc=285}
+    F5=@{vk=0x74;kc=286}; F6=@{vk=0x75;kc=287}; F7=@{vk=0x76;kc=288}; F8=@{vk=0x77;kc=289}
+    F9=@{vk=0x78;kc=290}; F10=@{vk=0x79;kc=291}; F11=@{vk=0x7A;kc=292}; F12=@{vk=0x7B;kc=293}
+    Home=@{vk=0x24;kc=278}; End=@{vk=0x23;kc=279}; Insert=@{vk=0x2D;kc=277}
+    Delete=@{vk=0x2E;kc=127}; PageUp=@{vk=0x21;kc=280}; PageDown=@{vk=0x22;kc=281}
+}
+
+function Sync-Cmdbinding($keyCode) {
+    $aliases = @("$keyCode:seed", '281:seed')
+}

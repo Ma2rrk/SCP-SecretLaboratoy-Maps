@@ -11,11 +11,10 @@
   <ItemGroup>
     <Compile Remove="research\**\*.cs" />
     <None Update="overlay.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Update="generated-map-224593721.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="map-generation-data.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="map-generation-data-14.2.9.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="room.txt" CopyToOutputDirectory="PreserveNewest" />
-    <None Update="scpsl-seed-detector.bat" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Resources/seed-bindings.txt" LogicalName="SLMapsOverlay.SeedBindings" />
   </ItemGroup>
 
 </Project>

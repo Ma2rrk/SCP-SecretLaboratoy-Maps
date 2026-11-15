@@ -26,8 +26,7 @@ try {
         'map-generation-data.json',
         'map-generation-data-14.2.9.json',
         'room.txt',
-        'overlay.json',
-        'scpsl-seed-detector.bat'
+        'overlay.json'
     )
     foreach ($name in $runtimeFiles) {
         $source = Join-Path $publishDirectory $name
@@ -38,7 +37,7 @@ try {
     }
     # Fail if a future publish adds an external runtime dependency to this single-file build.
     $unexpected = Get-ChildItem -LiteralPath $publishDirectory -File |
-        Where-Object { $_.Name -notin $runtimeFiles -and $_.Name -ne 'generated-map-224593721.json' }
+        Where-Object { $_.Name -notin $runtimeFiles }
     if ($unexpected) { throw "Review additional publish files: $($unexpected.Name -join ', ')" }
     Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $packageDirectory
     Copy-Item -LiteralPath (Join-Path $projectRoot 'research/15.0-beta.md') `

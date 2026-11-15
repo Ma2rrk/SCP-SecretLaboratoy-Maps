@@ -12,7 +12,7 @@ SCP: Secret Laboratory map overlay and local map generator. The overlay reads th
 - 预存 atlas 房间连接，绘制去重后的房间连接线。
 - EZ、HCZ 和 LCZ 使用独立的缩放与位置设置。
 - 设置面板支持地图透明度、房间颜色和连接颜色自定义。
-- 切换获取种子键时，从 BAT 读取键码并复制游戏控制台绑定命令。
+- 切换获取种子键时，从内置映射文本读取键码并复制游戏控制台绑定命令，兼容可选的外部 BAT。
 - 地图字体支持已安装字体，切换后立即生效。
 - 使用 `room.txt` 提供中文房间名称；没有中文翻译的英文房间名不会显示。
 - `MicroHID` 在界面中显示为 `HID`。
@@ -23,7 +23,7 @@ SCP: Secret Laboratory map overlay and local map generator. The overlay reads th
 - Stores atlas connections in advance and draws deduplicated room connections.
 - Provides independent scale and position settings for EZ/HCZ and LCZ.
 - Lets you customize map opacity, room color, and connection color from the settings panel.
-- Reads key codes from the BAT file and copies a console binding command when the seed key changes.
+- Reads embedded key mapping data and copies a console binding command when the seed key changes, with optional external BAT support.
 - Supports installed map fonts, with immediate switching.
 - Uses `room.txt` for Chinese room names; untranslated English room names are hidden.
 - Displays `MicroHID` as `HID` in the UI.
@@ -46,9 +46,9 @@ SCP: Secret Laboratory map overlay and local map generator. The overlay reads th
 
 ## 安装与启动 Installation
 
-发布包用户：将整个 ZIP 解压到可写目录，启动 `SLMapsOverlay.exe`。保留程序旁的两份地图数据、`room.txt`、默认配置和 BAT 文件；覆盖层仅读取 BAT 文本，无需执行它。按 `F8` 打开设置，在“地图来源”下方切换地图版本。15.0 Beta 的 EZ 仍有 12 个待游戏实测确认的端口，相关连线尚不完整。
+发布包用户：将整个 ZIP 解压到可写目录，启动 `SLMapsOverlay.exe`。保留程序旁的两份地图数据、`room.txt` 和默认配置；按键映射已内置，发布包无需附带 BAT。按 `F8` 打开设置，在“地图来源”下方切换地图版本。15.0 Beta 的 EZ 仍有 12 个待游戏实测确认的端口，相关连线尚不完整。
 
-Release users: extract the entire ZIP into a writable folder and launch `SLMapsOverlay.exe`. Keep both map data files, `room.txt`, the default settings and BAT file alongside it. The overlay reads the BAT as text; running it is unnecessary. Press `F8` to open settings and switch map versions below the map source option. The 15.0 Beta EZ connections remain incomplete at 12 ports pending comparison with in-game maps.
+Release users: extract the entire ZIP into a writable folder and launch `SLMapsOverlay.exe`. Keep both map data files, `room.txt` and the default settings alongside it. Key mappings are embedded; no BAT is included or required. Press `F8` to open settings and switch map versions below the map source option. The 15.0 Beta EZ connections remain incomplete at 12 ports pending comparison with in-game maps.
 
 从源码运行 / Run from source:
 
@@ -131,8 +131,8 @@ Drag the title or subtitle to move the panel. Its position is saved when release
 
 - 面板快捷键 / Settings panel hotkey：默认 `F8`。
 - 获取种子键 / Seed key：默认 `PageDown`。程序只会在游戏窗口处于前台时模拟该按键。
-- 修改获取种子键后，对应的 `cmdbind <游戏键码> seed` 命令自动复制到剪贴板，请粘贴到游戏控制台执行。也可以点击“复制绑定命令”重试。键码和绑定信息读取自程序旁的 `scpsl-seed-detector.bat`；覆盖层不会执行该 BAT 或自动修改游戏绑定文件。
-- Changing the seed key copies its `cmdbind <game key code> seed` command. Paste it into the game console to apply the binding. The overlay only reads the BAT file; it does not run it or edit game bindings.
+- 修改获取种子键后，对应的 `cmdbind <游戏键码> seed` 命令自动复制到剪贴板，请粘贴到游戏控制台执行。也可以点击“复制绑定命令”重试。默认读取内置映射文本；若自行在程序旁放置 `scpsl-seed-detector.bat`，则优先解析该文件。覆盖层不会执行 BAT 或自动修改游戏绑定文件。
+- Changing the seed key copies its `cmdbind <game key code> seed` command. Paste it into the game console to apply the binding. Embedded mappings are used by default; an optional `scpsl-seed-detector.bat` alongside the executable overrides them. The overlay never executes the BAT or edits game bindings.
 - 地图来源 / Map source：
   - `主 API`：使用主地图 API。
   - `备用 API (slmaps.com)`：使用备用 API。
@@ -215,3 +215,7 @@ The map structure research references the following public reverse-engineering a
 游戏资源只用于本地只读分析和验证；本仓库不包含游戏程序集或原始 Unity 资源。
 
 Game assets are used only for local read-only analysis and verification. This repository does not include the game assembly or original Unity assets.
+
+
+
+哦对了 上面是AI写的 我没仔细看
