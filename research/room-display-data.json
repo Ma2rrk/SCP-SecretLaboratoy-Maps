@@ -1,0 +1,578 @@
+{
+  "LCZ_ClassDSpawn": {
+    "name": "LczClassDSpawn",
+    "group": "light",
+    "label": "D 级人员出生点",
+    "category": "personnel",
+    "short": "D级出生",
+    "glyph": "rect"
+  },
+  "LCZ_Cafe": {
+    "name": "LczComputerRoom",
+    "group": "light",
+    "label": "电脑房",
+    "category": "utility",
+    "short": "电脑房",
+    "glyph": "rect"
+  },
+  "LCZ_ChkpA": {
+    "name": "LczCheckpointA",
+    "group": "light",
+    "label": "A 电梯（轻收容侧）",
+    "category": "checkpoint",
+    "short": "A电梯",
+    "glyph": "gate"
+  },
+  "LCZ_ChkpB": {
+    "name": "LczCheckpointB",
+    "group": "light",
+    "label": "B 电梯（轻收容侧）",
+    "category": "checkpoint",
+    "short": "B电梯",
+    "glyph": "gate"
+  },
+  "LCZ_Toilets": {
+    "name": "LczToilets",
+    "group": "light",
+    "label": "卫生间",
+    "category": "utility",
+    "short": "卫生间",
+    "glyph": "rect"
+  },
+  "LCZ_Armory": {
+    "name": "LczArmory",
+    "group": "light",
+    "label": "轻型武器库",
+    "category": "security",
+    "short": "武器库",
+    "glyph": "shield"
+  },
+  "LCZ_173": {
+    "name": "Lcz173",
+    "group": "light",
+    "label": "旧 173 收容间",
+    "category": "scp",
+    "short": "旧173",
+    "glyph": "octagon"
+  },
+  "LCZ_372": {
+    "name": "LczGlassroom",
+    "group": "light",
+    "label": "玻璃房",
+    "category": "utility",
+    "short": "玻璃房",
+    "glyph": "rect"
+  },
+  "LCZ_914": {
+    "name": "Lcz914",
+    "group": "light",
+    "label": "SCP-914 收容间（升级机）",
+    "category": "scp",
+    "short": "914",
+    "glyph": "octagon"
+  },
+  "LCZ_330": {
+    "name": "Lcz330",
+    "group": "light",
+    "label": "糖果屋（SCP-330）",
+    "category": "scp",
+    "short": "糖果屋",
+    "glyph": "octagon"
+  },
+  "LCZ_Plants": {
+    "name": "LczGreenhouse",
+    "group": "light",
+    "label": "温室",
+    "category": "utility",
+    "short": "温室",
+    "glyph": "rect"
+  },
+  "LCZ_Airlock": {
+    "name": "LczAirlock",
+    "group": "light",
+    "label": "气闸室",
+    "category": "utility",
+    "short": "气闸",
+    "glyph": "gate"
+  },
+  "LCZ_Crossing": {
+    "name": "Unnamed",
+    "group": "light",
+    "label": "十字路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "LCZ_TCross": {
+    "name": "Unnamed",
+    "group": "light",
+    "label": "T 形路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "LCZ_Straight": {
+    "name": "Unnamed",
+    "group": "light",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "LCZ_Curve": {
+    "name": "Unnamed",
+    "group": "light",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_049": {
+    "name": "Hcz049",
+    "group": "core",
+    "label": "049 / 173 收容间",
+    "category": "scp",
+    "short": "049/173",
+    "glyph": "octagon"
+  },
+  "HCZ_079": {
+    "name": "Hcz079",
+    "group": "core",
+    "label": "SCP-079 收容间",
+    "category": "scp",
+    "short": "079",
+    "glyph": "octagon"
+  },
+  "HCZ_096": {
+    "name": "Hcz096",
+    "group": "core",
+    "label": "SCP-096 收容间",
+    "category": "scp",
+    "short": "096",
+    "glyph": "octagon"
+  },
+  "HCZ_106_Rework": {
+    "name": "Hcz106",
+    "group": "core",
+    "label": "SCP-106 收容间",
+    "category": "scp",
+    "short": "106",
+    "glyph": "octagon"
+  },
+  "HCZ_939": {
+    "name": "Hcz939",
+    "group": "core",
+    "label": "SCP-939 收容间",
+    "category": "scp",
+    "short": "939",
+    "glyph": "octagon"
+  },
+  "HCZ_ChkpA": {
+    "name": "HczCheckpointA",
+    "group": "core",
+    "label": "A 电梯（重收容侧）",
+    "category": "checkpoint",
+    "short": "A电梯",
+    "glyph": "gate"
+  },
+  "HCZ_ChkpB": {
+    "name": "HczCheckpointB",
+    "group": "core",
+    "label": "B 电梯（重收容侧）",
+    "category": "checkpoint",
+    "short": "B电梯",
+    "glyph": "gate"
+  },
+  "HCZ_Corner_Deep": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Crossing": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "十字路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Crossroom_Water": {
+    "name": "HczAcroamaticAbatement",
+    "group": "core",
+    "label": "瀑布房",
+    "category": "utility",
+    "short": "瀑布房",
+    "glyph": "rect"
+  },
+  "HCZ_Curve": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_127": {
+    "name": "Hcz127",
+    "group": "core",
+    "label": "SCP-127 收容间",
+    "category": "scp",
+    "short": "127",
+    "glyph": "octagon"
+  },
+  "HCZ_ServerRoom": {
+    "name": "HczServers",
+    "group": "core",
+    "label": "机房",
+    "category": "utility",
+    "short": "机房",
+    "glyph": "rect"
+  },
+  "HCZ_Intersection": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "T 形路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Intersection_Junk": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "T 形路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_MicroHID_New": {
+    "name": "HczMicroHID",
+    "group": "core",
+    "label": "HID",
+    "category": "core",
+    "short": "HID",
+    "glyph": "hex"
+  },
+  "HCZ_Nuke": {
+    "name": "HczWarhead",
+    "group": "core",
+    "label": "核弹控制室",
+    "category": "core",
+    "short": "核弹室",
+    "glyph": "hex"
+  },
+  "HCZ_Straight": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Straight_C": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Straight_PipeRoom": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_TArmory": {
+    "name": "HczArmory",
+    "group": "core",
+    "label": "重型武器库",
+    "category": "security",
+    "short": "武器库",
+    "glyph": "shield"
+  },
+  "HCZ_Tesla_Rework": {
+    "name": "HczTesla",
+    "group": "core",
+    "label": "电网",
+    "category": "security",
+    "short": "电网",
+    "glyph": "pass"
+  },
+  "HCZ_Testroom": {
+    "name": "HczTestroom",
+    "group": "core",
+    "label": "老狗家",
+    "category": "utility",
+    "short": "老狗家",
+    "glyph": "rect"
+  },
+  "HCZ_EZ_Checkpoint Part": {
+    "name": "HczCheckpointToEntranceZone",
+    "group": "core",
+    "label": "上检查点（通往办公区）",
+    "category": "checkpoint",
+    "short": "上检",
+    "glyph": "gate"
+  },
+  "HCZ_IncineratorWayside": {
+    "name": "HczWaysideIncinerator",
+    "group": "core",
+    "label": "路边焚化炉",
+    "category": "utility",
+    "short": "焚化炉",
+    "glyph": "circle"
+  },
+  "HCZ_Intersection_Ramp": {
+    "name": "HczRampTunnel",
+    "group": "core",
+    "label": "斜坡",
+    "category": "utility",
+    "short": "斜坡",
+    "glyph": "pass"
+  },
+  "EZ_Cafeteria": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_Chef": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_CollapsedTunnel": {
+    "name": "EzCollapsedTunnel",
+    "group": "core",
+    "label": "坍塌隧道",
+    "category": "deadend",
+    "short": "坍塌隧道",
+    "glyph": "dead"
+  },
+  "EZ_Crossing": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "十字路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_Curve": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_Endoof": {
+    "name": "EzRedroom",
+    "group": "core",
+    "label": "红房",
+    "category": "deadend",
+    "short": "红房",
+    "glyph": "dead"
+  },
+  "EZ_GateA": {
+    "name": "EzGateA",
+    "group": "core",
+    "label": "A 大门（地表出口）",
+    "category": "checkpoint",
+    "short": "A大门",
+    "glyph": "gate"
+  },
+  "EZ_GateB": {
+    "name": "EzGateB",
+    "group": "core",
+    "label": "B 大门（地表出口）",
+    "category": "checkpoint",
+    "short": "B大门",
+    "glyph": "gate"
+  },
+  "EZ_HCZ_Checkpoint Part": {
+    "name": "HczCheckpointToEntranceZone",
+    "group": "core",
+    "label": "上检查点（通往办公区）",
+    "category": "checkpoint",
+    "short": "上检",
+    "glyph": "gate"
+  },
+  "EZ_Intercom": {
+    "name": "EzIntercom",
+    "group": "core",
+    "label": "广播室",
+    "category": "utility",
+    "short": "广播室",
+    "glyph": "rect"
+  },
+  "EZ_PCs": {
+    "name": "EzOfficeLarge",
+    "group": "core",
+    "label": "大型办公室",
+    "category": "utility",
+    "short": "大办公室",
+    "glyph": "rect"
+  },
+  "EZ_PCs_small": {
+    "name": "EzOfficeSmall",
+    "group": "core",
+    "label": "小型办公室",
+    "category": "utility",
+    "short": "小办公室",
+    "glyph": "rect"
+  },
+  "EZ_Shelter": {
+    "name": "EzEvacShelter",
+    "group": "core",
+    "label": "避难所",
+    "category": "deadend",
+    "short": "避难所",
+    "glyph": "dead"
+  },
+  "EZ_Smallrooms1": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_Smallrooms2": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_Straight": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_StraightColumn": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "直线走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_ThreeWay": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "T 形路口",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "EZ_upstairs": {
+    "name": "EzOfficeStoried",
+    "group": "core",
+    "label": "普通办公室",
+    "category": "utility",
+    "short": "普通办公",
+    "glyph": "rect"
+  },
+  "LCZ_ChkpC": {
+    "name": "LczCheckpointC",
+    "group": "light",
+    "label": "C 电梯（轻收容侧）",
+    "category": "checkpoint",
+    "short": "C电梯",
+    "glyph": "gate"
+  },
+  "HCZ_ChkpC": {
+    "name": "HczCheckpointC",
+    "group": "core",
+    "label": "C 电梯（重收容侧）",
+    "category": "checkpoint",
+    "short": "C电梯",
+    "glyph": "gate"
+  },
+  "HCZ_Corner_Deep Variant": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Corner_Deep Variant 1": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Corner_Deep Variant 2": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Corner_Deep Variant 3": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Corner_Deep Variant 4": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "HCZ_Corner_Deep Variant 5": {
+    "name": "Unnamed",
+    "group": "core",
+    "label": "转角走廊",
+    "category": "corridor",
+    "short": "",
+    "glyph": "corridor"
+  },
+  "LCZ_Plants_2": {
+    "name": "LczGreenhouse2",
+    "group": "light",
+    "label": "第二温室",
+    "category": "utility",
+    "short": "温室2",
+    "glyph": "rect"
+  },
+  "LCZ_TCross_Closet": {
+    "name": "Unnamed",
+    "group": "light",
+    "label": "储物间走廊",
+    "category": "corridor",
+    "short": "储物间",
+    "glyph": "corridor"
+  },
+  "LCZ_Curve_Closet": {
+    "name": "Unnamed",
+    "group": "light",
+    "label": "储物间走廊",
+    "category": "corridor",
+    "short": "储物间",
+    "glyph": "corridor"
+  }
+}

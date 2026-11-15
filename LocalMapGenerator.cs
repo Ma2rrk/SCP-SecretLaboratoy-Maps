@@ -5,38 +5,43 @@ namespace SLMapsOverlay;
 internal static class LocalMapGenerator
 {
     private static readonly string[] ZoneOrder = ["LightContainment", "HeavyContainment", "Entrance"];
-    private static readonly Lazy<GenerationData> Data = new(ReadData);
+    private static readonly Lazy<GenerationData> Data = new(() => ReadData(null));
 
-    public static MapApiResponse Generate(long seed)
+    public static MapApiResponse Generate(long seed, string? dataPath = null)
     {
+        var data = dataPath is null ? Data.Value : ReadData(dataPath);
         var random = new LegacyRandom(unchecked((int)seed));
-        var map = new MapApiResponse { Seed = seed, Version = 15 };
+        var map = new MapApiResponse
+        {
+            Seed = seed,
+            Version = dataPath?.Contains("14.2.9", StringComparison.OrdinalIgnoreCase) == true ? 14 : 15,
+        };
         foreach (var zoneName in ZoneOrder)
         {
-            var zone = Data.Value.Zones[zoneName];
+            var zone = data.Zones[zoneName];
             var atlasIndex = random.Next(zone.Atlases.Count);
             map.AtlasIndex[zoneName] = atlasIndex;
             var cells = zone.Atlases[atlasIndex].Select(cell => cell.Copy()).ToList();
-            if (zoneName == "Entrance") AlignEntrance(cells, map.Zones["HeavyContainment"]);
+            if (zoneName == "Entrance") AlignEntrance(cells, map.Zones["HeavyContainment"], zone.Alignment);
             foreach (var cell in cells)
             {
                 cell.Rotation = cell.Rotations[random.Next(cell.Rotations.Length)];
-                if (zoneName == "Entrance") cell.Rotation = (cell.Rotation + 270) % 360;
+                if (zoneName == "Entrance") cell.Rotation = (cell.Rotation + (int)zone.Alignment.RotationOffset) % 360;
             }
             for (var i = cells.Count - 1; i > 0; i--)
             {
                 var j = random.Next(i + 1);
                 (cells[i], cells[j]) = (cells[j], cells[i]);
             }
-            map.Zones[zoneName] = SelectRooms(zoneName, cells, zone.Templates, random);
+            map.Zones[zoneName] = SelectRooms(zoneName, cells, zone, random);
         }
         Validate(map);
         return map;
     }
 
-    private static GenerationData ReadData()
+    private static GenerationData ReadData(string? dataPath)
     {
-        var path = Path.Combine(AppContext.BaseDirectory, "map-generation-data.json");
+        var path = dataPath ?? Path.Combine(AppContext.BaseDirectory, "map-generation-data.json");
         using var stream = File.OpenRead(path);
         return JsonSerializer.Deserialize<GenerationData>(stream, new JsonSerializerOptions
         {
@@ -44,14 +49,16 @@ internal static class LocalMapGenerator
         }) ?? throw new InvalidDataException("地图生成数据为空");
     }
 
-    private static void AlignEntrance(List<AtlasCell> cells, List<RoomData> heavyRooms)
+    private static void AlignEntrance(List<AtlasCell> cells, List<RoomData> heavyRooms, ZoneAlignment alignment)
     {
         var entrance = cells.Where(cell => cell.SpecificRooms.Contains(13)).ToList();
         var heavy = heavyRooms.Where(room => room.Variant == "HCZ_EZ_Checkpoint Part").ToList();
         if (entrance.Count != 2 || heavy.Count != 2)
             throw new InvalidDataException("HCZ/EZ 检查点数量异常");
-        var offsetX = (int)heavy.Average(room => room.X) + 15 - (int)entrance.Average(cell => cell.X);
-        var offsetZ = (int)heavy.Average(room => room.Z) - (int)entrance.Average(cell => cell.Z);
+        var offsetX = (int)(heavy.Average(room => room.X) + alignment.PositionOffset[0]
+            - entrance.Average(cell => cell.X));
+        var offsetZ = (int)(heavy.Average(room => room.Z) + alignment.PositionOffset[2]
+            - entrance.Average(cell => cell.Z));
         foreach (var cell in cells)
         {
             cell.X += offsetX;
@@ -60,8 +67,9 @@ internal static class LocalMapGenerator
     }
 
     private static List<RoomData> SelectRooms(string zoneName, List<AtlasCell> cells,
-        List<RoomTemplate> templates, LegacyRandom random)
+        GenerationZone zone, LegacyRandom random)
     {
+        var templates = zone.Templates;
         var result = new List<RoomData>();
         var amounts = new int[templates.Count];
         var templateIndices = templates.Select((template, index) => (template, index))
@@ -76,10 +84,11 @@ internal static class LocalMapGenerator
             for (var index = 0; index < templates.Count; index++)
             {
                 var template = templates[index];
-                if (cell.SpecificRooms.Length > 0
-                    ? cell.SpecificRooms.Contains(template.RoomNameId)
-                    : template.ShapeId == cell.ShapeId && !reserved.Contains(template.RoomNameId)
-                        && amounts[index] < template.MaxAmount)
+                // ProcessInterpreted checks special flag, name, shape and cap for every room.
+                var specialRoom = template.SpecialRoom ?? reserved.Contains(template.RoomNameId);
+                if (specialRoom == (cell.SpecificRooms.Length > 0)
+                    && (cell.SpecificRooms.Length == 0 || cell.SpecificRooms.Contains(template.RoomNameId))
+                    && template.ShapeId == cell.ShapeId && amounts[index] < template.MaxAmount)
                     candidates.Add(template);
             }
             if (candidates.Count == 0)
@@ -95,22 +104,32 @@ internal static class LocalMapGenerator
             }
             if (chosen is null)
             {
-                var weights = candidates.Select(t =>
-                {
-                    var adjacent = adjacentCounts.GetValueOrDefault((t.Name, cell.X, cell.Z));
-                    return t.ChanceMultiplier * Math.Pow(t.AdjacentChanceMultiplier, adjacent);
-                }).ToArray();
-                var value = random.NextDouble() * weights.Sum();
-                chosen = candidates[^1];
+                var weights = new float[candidates.Count];
+                var totalWeight = 0f;
                 for (var i = 0; i < candidates.Count; i++)
                 {
-                    if (value < weights[i])
+                    var t = candidates[i];
+                    var adjacent = adjacentCounts.GetValueOrDefault((t.Name, cell.X, cell.Z));
+                    var weight = t.ChanceMultiplier;
+                    for (var n = 0; n < adjacent; n++) weight *= t.AdjacentChanceMultiplier;
+                    weights[i] = weight;
+                    totalWeight += weight;
+                }
+                if (totalWeight <= 0 || !float.IsFinite(totalWeight))
+                    throw new InvalidDataException($"地图格子的房间权重无效: {zoneName} ({cell.X}, {cell.Z})");
+                var value = random.NextDouble() * totalWeight;
+                var cumulative = 0f;
+                for (var i = 0; i < candidates.Count; i++)
+                {
+                    // Native addss/cvtss2sd/comisd: round each addition to float, then compare >=.
+                    cumulative += weights[i];
+                    if (cumulative >= value)
                     {
                         chosen = candidates[i];
                         break;
                     }
-                    value -= weights[i];
                 }
+                if (chosen is null) throw new InvalidDataException("地图房间权重选择失败");
             }
             amounts[templateIndices[chosen]]++;
             adjacentCounts[(chosen.Name, cell.X - 15, cell.Z)] =
@@ -144,11 +163,12 @@ internal static class LocalMapGenerator
                     _ => throw new InvalidDataException($"未知房间形状 {cell.ShapeId}"),
                 },
                 X = cell.X,
-                Y = zoneName == "LightContainment" ? 100 : -100,
+                Y = zone.Height ?? (zoneName == "LightContainment" ? 100 : -100),
                 Z = cell.Z,
                 RotY = cell.Rotation,
                 Cx = cell.Cx,
                 Cy = cell.Cy,
+                ConnectorPorts = new Dictionary<string, int>(chosen.ConnectorPorts),
                 Conn = cell.Connections[cell.Rotation.ToString()]
                     .Select(pair => new RoomConnection { Dx = pair[0], Dz = pair[1] }).ToList(),
             });
@@ -173,8 +193,16 @@ internal static class LocalMapGenerator
 
     private sealed class GenerationZone
     {
+        public float? Height { get; set; }
+        public ZoneAlignment Alignment { get; set; } = new();
         public List<List<AtlasCell>> Atlases { get; set; } = new();
         public List<RoomTemplate> Templates { get; set; } = new();
+    }
+
+    private sealed class ZoneAlignment
+    {
+        public float[] PositionOffset { get; set; } = [15, 0, 0];
+        public float RotationOffset { get; set; } = 270;
     }
 
     private sealed class AtlasCell
@@ -204,8 +232,10 @@ internal static class LocalMapGenerator
         public int RoomNameId { get; set; }
         public int MinAmount { get; set; }
         public int MaxAmount { get; set; }
-        public double ChanceMultiplier { get; set; }
-        public double AdjacentChanceMultiplier { get; set; }
+        public float ChanceMultiplier { get; set; }
+        public float AdjacentChanceMultiplier { get; set; }
+        public bool? SpecialRoom { get; set; }
+        public Dictionary<string, int> ConnectorPorts { get; set; } = new();
         public RoomDisplay Display { get; set; } = new();
     }
 

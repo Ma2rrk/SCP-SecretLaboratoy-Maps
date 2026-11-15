@@ -1,0 +1,109 @@
+{
+  "sourceSha256": {
+    "level2": "0cceb96bf555d98e9a24105614837e92e304533a198aedd12520ce8e4a4316c3",
+    "sharedassets2.assets": "c9bce89ef6640dba9168deced4548033b96b8d517f2d1b2d712496ee1a68c8f2"
+  },
+  "note": "Raw 15.0 Beta Atlas ports, unresolved after static analysis. Do not infer links across missing cells or non-reciprocal ports. Requires in-game map export.",
+  "atlases": {
+    "Entrance/EZ_5_New": {
+      "unresolvedPorts": [
+        {
+          "x": 90,
+          "z": 30,
+          "dx": 0,
+          "dz": 1,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 75,
+          "z": 45,
+          "dx": 1,
+          "dz": 0,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 90,
+          "z": 75,
+          "dx": 0,
+          "dz": -1,
+          "reason": "no-return-port"
+        },
+        {
+          "x": 90,
+          "z": 75,
+          "dx": 0,
+          "dz": 1,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 75,
+          "z": 90,
+          "dx": 1,
+          "dz": 0,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 90,
+          "z": 120,
+          "dx": 0,
+          "dz": -1,
+          "reason": "no-return-port"
+        }
+      ],
+      "componentSizes": [
+        25,
+        1
+      ]
+    },
+    "Entrance/EZ_2_New": {
+      "unresolvedPorts": [
+        {
+          "x": 90,
+          "z": 30,
+          "dx": 0,
+          "dz": 1,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 75,
+          "z": 45,
+          "dx": 1,
+          "dz": 0,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 90,
+          "z": 75,
+          "dx": 0,
+          "dz": -1,
+          "reason": "no-return-port"
+        },
+        {
+          "x": 90,
+          "z": 75,
+          "dx": 0,
+          "dz": 1,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 75,
+          "z": 90,
+          "dx": 1,
+          "dz": 0,
+          "reason": "missing-cell"
+        },
+        {
+          "x": 90,
+          "z": 120,
+          "dx": 0,
+          "dz": -1,
+          "reason": "no-return-port"
+        }
+      ],
+      "componentSizes": [
+        21,
+        5
+      ]
+    }
+  }
+}

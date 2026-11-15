@@ -2,6 +2,7 @@
 bin/
 obj/
 buildcheck*/
+artifacts/
 
 # Runtime state and logs
 overlay.log

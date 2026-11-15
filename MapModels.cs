@@ -74,6 +74,9 @@ public sealed class RoomData
 
     [JsonPropertyName("conn")]
     public List<RoomConnection> Conn { get; set; } = new();
+
+    [JsonPropertyName("connectorPorts")]
+    public Dictionary<string, int> ConnectorPorts { get; set; } = new();
 }
 
 public sealed class RoomConnection
